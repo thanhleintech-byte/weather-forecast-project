@@ -21,3 +21,7 @@ output "oidc_provider_arn" {
 output "node_security_group_id" {
   value = aws_security_group.nodes.id
 }
+
+output "jenkins_irsa_role_arn" {
+  value = aws_iam_role.jenkins.arn
+}

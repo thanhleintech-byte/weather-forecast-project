@@ -66,6 +66,8 @@ jenkins:
   serviceAccount:
     create: true
     name: jenkins
+    annotations:
+      eks.amazonaws.com/role-arn: "arn:aws:iam::047750375423:role/max-weather-production-jenkins-role"
   rbac:
     create: true
     readSecrets: true
