@@ -245,7 +245,7 @@ Terraform provisions in dependency order:
 5. **CloudWatch** — log groups, metric filters, alarms
 6. **Lambda Authorizer** — deploys `lambda/authorizer/` as a zip to Lambda
 7. **API Gateway** — REST API with TOKEN authorizer, routes, and `prod` stage
-8. **Addons** — installs ArgoCD and Jenkins via Helm; applies ArgoCD bootstrap manifest
+8. **Addons** — installs **ArgoCD only** via Helm; pre-creates `jenkins-credentials` and `max-weather-secrets` K8s secrets; applies the ArgoCD bootstrap manifest; patches `aws-auth` for Jenkins IRSA. Everything else (Jenkins, Nginx, app) is then installed by ArgoCD from Git.
 
 After apply, retrieve all outputs:
 
@@ -285,42 +285,82 @@ docker push $ECR_URL:latest
 
 ---
 
-## GitOps — ArgoCD
+## Bootstrap Flow — Terraform → ArgoCD → GitOps
 
-Terraform installs ArgoCD via Helm and applies `gitops/argocd/bootstrap.yaml` (app-of-apps pattern).
+Terraform's responsibility ends at handing control to ArgoCD. From that point, all cluster state is driven from Git.
 
-ArgoCD then continuously syncs all applications from the Git repo:
+```
+terraform apply
+      │
+      ├─1─► helm install argocd              (ArgoCD controller running in EKS)
+      │
+      ├─2─► kubectl create secret            jenkins-credentials  (namespace: jenkins)
+      │                                      max-weather-secrets  (namespace: max-weather)
+      │
+      ├─3─► kubectl apply bootstrap.yaml     (ArgoCD Application CRs — app-of-apps)
+      │           │
+      │           │  ArgoCD syncs from GitHub repo (gitops/argocd/)
+      │           │
+      │           ├──► metrics-server        → kube-system
+      │           ├──► ingress-nginx         → ingress-nginx      (creates public NLB)
+      │           ├──► jenkins               → jenkins            (Helm, reads jenkins-credentials secret)
+      │           ├──► jenkins-pipelines     → jenkins            (registers pipeline job via Job DSL)
+      │           └──► max-weather-prod      → max-weather        (Helm chart: Deployment, Service, Ingress, HPA, PDB)
+      │
+      └─4─► patch aws-auth configmap         (Jenkins IRSA role → system:masters)
+```
 
-| ArgoCD App | Source path | Namespace |
-|---|---|---|
-| `metrics-server` | `gitops/argocd/infra/metrics-server` | `kube-system` |
-| `ingress-nginx` | `gitops/argocd/infra/ingress-nginx` | `ingress-nginx` |
-| `jenkins` | `gitops/argocd/infra/jenkins` | `jenkins` |
-| `jenkins-pipelines` | `gitops/argocd/infra/jenkins-pipelines` | `jenkins` |
-| `max-weather` | `gitops/argocd/microservices/max-weather` | `max-weather` |
-
-Any change merged to `main` in the GitOps paths above is automatically reconciled to the cluster. The `max-weather` Helm chart manages: Deployment, Service, Ingress, HPA (2–10 replicas), PDB, and ServiceAccount (with IRSA annotation for CloudWatch).
+Any subsequent change to a file under `gitops/argocd/` merged to `main` is automatically reconciled to the cluster by ArgoCD (`automated.selfHeal: true`, `automated.prune: true`). No manual `kubectl apply` is required after the initial bootstrap.
 
 ---
 
-## CI/CD — Jenkins Pipeline
+## CI/CD Flow — GitHub → Jenkins → ECR → EKS
 
-Jenkins is deployed into EKS by ArgoCD. The pipeline in `gitops/jenkins/Jenkinsfile` runs on every push to `main`:
+Jenkins itself is a GitOps-managed workload (installed by ArgoCD). Once running, it handles application CI/CD triggered by GitHub.
 
 ```
-Checkout ──► Test (pytest) ──► Build & Push (Kaniko → ECR) ──► Deploy to Production (kubectl rollout)
+Developer pushes to GitHub (main branch)
+      │
+      │  GitHub webhook
+      ▼
+Jenkins (running in EKS, namespace: jenkins)
+      │
+      ├─ Stage: Checkout
+      │         git clone repo
+      │         extract short commit SHA
+      │
+      ├─ Stage: Test
+      │         container: python:3.12
+      │         pytest app/tests/ → JUnit XML results
+      │
+      ├─ Stage: Build & Push
+      │         container: kaniko (in-cluster, no Docker socket needed)
+      │         reads ECR URL from Jenkins credential store (ecr-registry-url)
+      │         builds from app/Dockerfile
+      │         pushes two tags to ECR:
+      │           047750375423.dkr.ecr.ap-south-1.amazonaws.com/max-weather:<build-number>
+      │           047750375423.dkr.ecr.ap-south-1.amazonaws.com/max-weather:latest
+      │
+      └─ Stage: Deploy to Production  (only on branch: main)
+                container: aws-kubectl
+                aws eks update-kubeconfig  (uses Jenkins IRSA role — no static AWS keys)
+                kubectl set image deployment/max-weather max-weather=<new-image>
+                kubectl rollout status --timeout=180s
+                    │
+                    ▼
+                EKS performs rolling update
+                (maxUnavailable=1, maxSurge=1)
+                old pods terminated only after new pods pass readinessProbe
 ```
 
-**Pipeline details:**
+**Key design points:**
 
-| Stage | Tool | Action |
-|---|---|---|
-| Checkout | git | Clone repo, extract short commit SHA |
-| Test | python:3.12 container | `pytest` — publishes JUnit results |
-| Build & Push | Kaniko (in-cluster) | Builds from `app/Dockerfile`, tags with build number + `latest`, pushes to ECR |
-| Deploy to Production | aws-kubectl container | `kubectl set image` + `rollout status --timeout=180s` |
-
-Jenkins pods run inside EKS using IRSA — no long-lived AWS keys in the cluster. ECR credentials are injected via a credential store.
+| Point | Detail |
+|---|---|
+| No static AWS keys in cluster | Jenkins uses IRSA (IAM role bound to K8s ServiceAccount via OIDC). The Jenkins IRSA role is added to `aws-auth` by Terraform. |
+| ECR authentication | Kaniko uses `ecr-login` credential helper. ECR URL is a Jenkins secret string (`ecr-registry-url`), not hardcoded. |
+| GitHub credentials | `github-pat` Jenkins credential (populated by JCasC from `jenkins-credentials` K8s secret). Used by GitHub Branch Source plugin to scan the repo and receive webhooks. |
+| Rollback | `kubectl rollout undo deployment/max-weather` — previous ECR image tag is retained by the ECR lifecycle policy (keeps last 10 tagged). |
 
 ---
 
@@ -513,7 +553,7 @@ Hardcoded in `app/main.py` for the OAuth2 token endpoint. Change before any publ
 | `cloudwatch` | Log groups, metric filters, alarms |
 | `lambda_authorizer` | Lambda function + API Gateway permission |
 | `api_gateway` | REST API, Lambda TOKEN authorizer, routes, `prod` stage |
-| `addons` | ArgoCD + Jenkins via Helm, bootstrap manifest, Jenkins credentials |
+| `addons` | ArgoCD (Helm), `jenkins-credentials` + `max-weather-secrets` K8s secrets, ArgoCD bootstrap manifest, `aws-auth` patch for Jenkins IRSA |
 
 All modules accept `project_name` and `environment` — change `environment = "staging"` to spin up an identical staging stack.
 
