@@ -16,11 +16,7 @@ data:
                 id('max-weather-src')
                 repoOwner('{{ .Values.pipeline.repoOwner }}')
                 repository('{{ .Values.pipeline.repository }}')
-                credentialsId('{{ .Values.pipeline.credentialsId }}')
-                traits {
-                  gitHubBranchDiscovery { strategyId(1) }
-                  gitHubPullRequestDiscovery { strategyId(1) }
-                }
+                scanCredentialsId('{{ .Values.pipeline.credentialsId }}')
               }
             }
             factory {
