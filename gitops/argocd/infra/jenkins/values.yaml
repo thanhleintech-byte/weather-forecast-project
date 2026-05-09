@@ -25,6 +25,8 @@ jenkins:
       - docker-workflow:latest
       - plain-credentials:latest
       - aws-credentials:latest
+      - junit:latest
+      - ws-cleanup:latest
     ingress:
       enabled: true
       ingressClassName: nginx
