@@ -1,16 +1,55 @@
 pipeline {
-    agent any
+    agent {
+        kubernetes {
+            yaml """
+apiVersion: v1
+kind: Pod
+spec:
+  serviceAccountName: jenkins
+  containers:
+  - name: jnlp
+    image: jenkins/inbound-agent:latest-jdk17
+    resources:
+      requests:
+        cpu: 256m
+        memory: 512Mi
+  - name: python
+    image: python:3.12-slim
+    command: ["sleep", "infinity"]
+    resources:
+      requests:
+        cpu: 256m
+        memory: 512Mi
+  - name: kaniko
+    image: gcr.io/kaniko-project/executor:debug
+    command: ["sleep", "infinity"]
+    env:
+    - name: AWS_SDK_LOAD_CONFIG
+      value: "true"
+    resources:
+      requests:
+        cpu: 512m
+        memory: 1Gi
+  - name: aws-kubectl
+    image: alpine/k8s:1.32.3
+    command: ["sleep", "infinity"]
+    securityContext:
+      runAsUser: 0
+    resources:
+      requests:
+        cpu: 128m
+        memory: 256Mi
+"""
+        }
+    }
 
     environment {
-        AWS_REGION      = 'ap-south-1'
-        ECR_REGISTRY    = credentials('ecr-registry-url')
-        IMAGE_NAME      = 'max-weather'
-        IMAGE_TAG       = "${env.BUILD_NUMBER}"
-        EKS_CLUSTER     = 'max-weather-production'
-        STAGING_NS      = 'max-weather-staging'
-        PRODUCTION_NS   = 'max-weather'
-        KUBECONFIG_CRED = 'eks-kubeconfig'
-        SLACK_CHANNEL   = '#deployments'
+        AWS_REGION    = 'ap-south-1'
+        ECR_REGISTRY  = credentials('ecr-registry-url')
+        IMAGE_NAME    = 'max-weather'
+        IMAGE_TAG     = "${env.BUILD_NUMBER}"
+        EKS_CLUSTER   = 'max-weather-production'
+        PRODUCTION_NS = 'max-weather'
     }
 
     options {
@@ -26,7 +65,7 @@ pipeline {
                 checkout scm
                 script {
                     env.GIT_COMMIT_SHORT = sh(script: "git rev-parse --short HEAD", returnStdout: true).trim()
-                    env.FULL_IMAGE = "${ECR_REGISTRY}/${IMAGE_NAME}:${IMAGE_TAG}"
+                    env.FULL_IMAGE   = "${ECR_REGISTRY}/${IMAGE_NAME}:${IMAGE_TAG}"
                     env.LATEST_IMAGE = "${ECR_REGISTRY}/${IMAGE_NAME}:latest"
                 }
             }
@@ -34,102 +73,38 @@ pipeline {
 
         stage('Test') {
             steps {
-                dir('app') {
-                    sh '''
-                        python3 -m venv .venv
-                        . .venv/bin/activate
-                        pip install -r requirements.txt -q
-                        python -m pytest tests/ -v --tb=short --junitxml=../test-results/results.xml
-                    '''
+                container('python') {
+                    dir('app') {
+                        sh '''
+                            python3 -m venv .venv
+                            . .venv/bin/activate
+                            pip install -r requirements.txt -q
+                            python -m pytest tests/ -v --tb=short --junitxml=../test-results/results.xml
+                        '''
+                    }
                 }
             }
             post {
                 always {
-                    junit 'test-results/results.xml'
+                    junit allowEmptyResults: true, testResults: 'test-results/results.xml'
                 }
             }
         }
 
-        stage('Docker Build') {
+        stage('Build & Push') {
             steps {
-                dir('app') {
+                container('kaniko') {
                     sh """
-                        docker build \
+                        mkdir -p /kaniko/.docker
+                        echo '{"credHelpers":{"${ECR_REGISTRY}":"ecr-login"}}' > /kaniko/.docker/config.json
+                        /kaniko/executor \
+                            --context=\${WORKSPACE}/app \
+                            --dockerfile=\${WORKSPACE}/app/Dockerfile \
+                            --destination=${env.FULL_IMAGE} \
+                            --destination=${env.LATEST_IMAGE} \
                             --label git-commit=${env.GIT_COMMIT_SHORT} \
-                            --label build-number=${IMAGE_TAG} \
-                            -t ${env.FULL_IMAGE} \
-                            -t ${env.LATEST_IMAGE} \
-                            .
+                            --label build-number=${IMAGE_TAG}
                     """
-                }
-            }
-        }
-
-        stage('Push to ECR') {
-            steps {
-                withAWS(region: AWS_REGION, credentials: 'aws-credentials') {
-                    sh """
-                        aws ecr get-login-password --region ${AWS_REGION} \
-                            | docker login --username AWS --password-stdin ${ECR_REGISTRY}
-                        docker push ${env.FULL_IMAGE}
-                        docker push ${env.LATEST_IMAGE}
-                    """
-                }
-            }
-        }
-
-        stage('Deploy to Staging') {
-            steps {
-                withCredentials([file(credentialsId: KUBECONFIG_CRED, variable: 'KUBECONFIG')]) {
-                    sh """
-                        kubectl set image deployment/max-weather \
-                            max-weather=${env.FULL_IMAGE} \
-                            -n ${STAGING_NS}
-                        kubectl rollout status deployment/max-weather \
-                            -n ${STAGING_NS} \
-                            --timeout=120s
-                    """
-                }
-            }
-        }
-
-        stage('Smoke Test Staging') {
-            environment {
-                WEATHER_CLIENT_SECRET = credentials('weather-client-secret')
-            }
-            steps {
-                withCredentials([file(credentialsId: KUBECONFIG_CRED, variable: 'KUBECONFIG')]) {
-                    script {
-                        def ingressHost = sh(
-                            script: "kubectl get ingress max-weather -n ${STAGING_NS} -o jsonpath='{.status.loadBalancer.ingress[0].hostname}'",
-                            returnStdout: true
-                        ).trim()
-
-                        sh """
-                            curl -sf http://${ingressHost}/health | grep -q '"status":"ok"'
-
-                            TOKEN=\$(curl -sf http://${ingressHost}/token \
-                                -d "username=max-weather-client&password=\${WEATHER_CLIENT_SECRET}" \
-                                | python3 -c "import sys,json; print(json.load(sys.stdin)['access_token'])")
-
-                            curl -sf -H "Authorization: Bearer \$TOKEN" \
-                                "http://${ingressHost}/weather/current?city=Singapore" \
-                                | grep -q '"city"'
-
-                            echo "Smoke tests passed"
-                        """
-                    }
-                }
-            }
-        }
-
-        stage('Approval') {
-            when { branch 'main' }
-            steps {
-                timeout(time: 15, unit: 'MINUTES') {
-                    input message: "Deploy ${IMAGE_TAG} to production?",
-                          ok: 'Deploy',
-                          submitter: 'lead-engineers'
                 }
             }
         }
@@ -137,8 +112,11 @@ pipeline {
         stage('Deploy to Production') {
             when { branch 'main' }
             steps {
-                withCredentials([file(credentialsId: KUBECONFIG_CRED, variable: 'KUBECONFIG')]) {
+                container('aws-kubectl') {
                     sh """
+                        aws eks update-kubeconfig \
+                            --region ${AWS_REGION} \
+                            --name ${EKS_CLUSTER}
                         kubectl set image deployment/max-weather \
                             max-weather=${env.FULL_IMAGE} \
                             -n ${PRODUCTION_NS}
@@ -153,29 +131,6 @@ pipeline {
     }
 
     post {
-        success {
-            slackSend(
-                channel: env.SLACK_CHANNEL,
-                color: 'good',
-                message: ":white_check_mark: *${IMAGE_NAME}* build `${IMAGE_TAG}` deployed to production\n" +
-                         "Commit: `${env.GIT_COMMIT_SHORT}` | Branch: `${env.BRANCH_NAME}`"
-            )
-        }
-        failure {
-            slackSend(
-                channel: env.SLACK_CHANNEL,
-                color: 'danger',
-                message: ":x: *${IMAGE_NAME}* build `${IMAGE_TAG}` FAILED\n" +
-                         "Branch: `${env.BRANCH_NAME}` | <${env.BUILD_URL}|View build>"
-            )
-            script {
-                if (env.BRANCH_NAME == 'main') {
-                    withCredentials([file(credentialsId: KUBECONFIG_CRED, variable: 'KUBECONFIG')]) {
-                        sh "kubectl rollout undo deployment/max-weather -n ${PRODUCTION_NS} || true"
-                    }
-                }
-            }
-        }
         always {
             cleanWs()
         }

@@ -240,6 +240,20 @@ resource "aws_iam_role_policy_attachment" "jenkins_ecr" {
   policy_arn = "arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryPowerUser"
 }
 
+data "aws_iam_policy_document" "jenkins_eks" {
+  statement {
+    effect    = "Allow"
+    actions   = ["eks:DescribeCluster"]
+    resources = [aws_eks_cluster.this.arn]
+  }
+}
+
+resource "aws_iam_role_policy" "jenkins_eks" {
+  name   = "jenkins-eks-describe"
+  role   = aws_iam_role.jenkins.name
+  policy = data.aws_iam_policy_document.jenkins_eks.json
+}
+
 resource "aws_eks_addon" "ebs_csi" {
   cluster_name             = aws_eks_cluster.this.name
   addon_name               = "aws-ebs-csi-driver"

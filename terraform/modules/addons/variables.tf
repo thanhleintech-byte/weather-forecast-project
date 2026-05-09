@@ -28,3 +28,7 @@ variable "aws_secret_access_key" {
   type      = string
   sensitive = true
 }
+
+variable "jenkins_irsa_role_arn" {
+  type = string
+}

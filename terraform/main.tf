@@ -161,6 +161,7 @@ module "addons" {
   github_pat            = var.github_pat
   aws_access_key_id     = var.aws_access_key_id
   aws_secret_access_key = var.aws_secret_access_key
+  jenkins_irsa_role_arn = module.eks.jenkins_irsa_role_arn
 
   depends_on = [module.eks]
 }

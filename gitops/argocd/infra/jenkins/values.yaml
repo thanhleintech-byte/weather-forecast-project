@@ -25,6 +25,13 @@ jenkins:
       - docker-workflow:latest
       - plain-credentials:latest
       - aws-credentials:latest
+    ingress:
+      enabled: true
+      ingressClassName: nginx
+      hostName: jenkins.workaholic.dpdns.org
+      annotations:
+        nginx.ingress.kubernetes.io/proxy-body-size: "0"
+        nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
     envFrom:
       - secretRef:
           name: jenkins-credentials
@@ -34,6 +41,11 @@ jenkins:
     JCasC:
       defaultConfig: true
       configScripts:
+        jenkins: |
+          jenkins:
+            systemMessage: "Max Weather CI — managed by JCasC"
+            numExecutors: 0
+            rootUrl: "https://jenkins.workaholic.dpdns.org"
         credentials: |
           credentials:
             system:
@@ -56,6 +68,11 @@ jenkins:
                         id: "aws-region"
                         description: "AWS region"
                         secret: "ap-south-1"
+                    - string:
+                        scope: GLOBAL
+                        id: "ecr-registry-url"
+                        description: "ECR registry base URL"
+                        secret: "047750375423.dkr.ecr.ap-south-1.amazonaws.com"
   agent:
     enabled: true
     namespace: jenkins
