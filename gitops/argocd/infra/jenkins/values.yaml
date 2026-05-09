@@ -14,17 +14,17 @@ jenkins:
         cpu: 1500m
         memory: 2Gi
     installPlugins:
-      - kubernetes:4302.v5d5ef7d25e77
-      - workflow-aggregator:600.vb_57cdd26fdd7
-      - git:5.4.1
-      - configuration-as-code:1887.v39e34b_a_0d7f0
-      - job-dsl:1.87
-      - github:1.38.0
-      - github-branch-source:1797.v86fdb_4d57d43
-      - pipeline-aws:1.43
-      - docker-workflow:572.v950f58993843
-      - plain-credentials:182.v468b_97b_9dcb_8
-      - aws-credentials:231.v08a_59f17d742
+      - kubernetes:latest
+      - workflow-aggregator:latest
+      - git:latest
+      - configuration-as-code:latest
+      - job-dsl:latest
+      - github:latest
+      - github-branch-source:latest
+      - pipeline-aws:latest
+      - docker-workflow:latest
+      - plain-credentials:latest
+      - aws-credentials:latest
     envFrom:
       - secretRef:
           name: jenkins-credentials
