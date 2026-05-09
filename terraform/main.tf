@@ -168,6 +168,23 @@ module "addons" {
 }
 
 # ---------------------------------------------------------------------------
+# API Gateway — public REST API with Lambda JWT authorizer
+# ---------------------------------------------------------------------------
+
+module "api_gateway" {
+  source = "./modules/api_gateway"
+
+  project_name                 = var.project_name
+  environment                  = var.environment
+  aws_region                   = var.aws_region
+  lambda_authorizer_arn        = module.lambda_authorizer.function_arn
+  lambda_authorizer_invoke_arn = module.lambda_authorizer.invoke_arn
+  app_host                     = var.app_host
+
+  depends_on = [module.lambda_authorizer]
+}
+
+# ---------------------------------------------------------------------------
 # Lambda Authorizer — JWT validation for API Gateway
 # ---------------------------------------------------------------------------
 

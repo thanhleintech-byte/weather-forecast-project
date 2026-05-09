@@ -33,6 +33,11 @@ output "lambda_authorizer_arn" {
   value       = module.lambda_authorizer.function_arn
 }
 
+output "api_gateway_url" {
+  description = "API Gateway invoke URL — use this as the base URL for all API calls"
+  value       = module.api_gateway.invoke_url
+}
+
 output "cloudwatch_log_group_app" {
   description = "CloudWatch log group for application logs"
   value       = module.cloudwatch.log_group_app

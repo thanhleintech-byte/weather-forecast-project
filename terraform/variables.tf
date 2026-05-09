@@ -151,3 +151,13 @@ variable "aws_secret_access_key" {
   type        = string
   sensitive   = true
 }
+
+# ---------------------------------------------------------------------------
+# API Gateway
+# ---------------------------------------------------------------------------
+
+variable "app_host" {
+  description = "Public hostname of the max-weather app (Nginx Ingress ALB, no scheme) — used as HTTP_PROXY backend for API Gateway"
+  type        = string
+  default     = "max-weather.workaholic.dpdns.org"
+}

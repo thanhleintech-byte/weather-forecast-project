@@ -1,0 +1,263 @@
+{
+  "info": {
+    "name": "Max Weather API",
+    "_postman_id": "max-weather-api-v1",
+    "description": "Max Weather platform API — demonstrates OAuth2 client_credentials flow and weather forecast endpoints through AWS API Gateway with Lambda JWT authorizer.\n\n**Setup:**\n1. Set `base_url` collection variable to your API Gateway invoke URL\n2. Run 'Get Access Token' first — it auto-saves the token\n3. All /weather/* requests will use the saved token automatically",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    {
+      "key": "base_url",
+      "value": "https://n1hr2duj11.execute-api.ap-south-1.amazonaws.com/prod",
+      "type": "string",
+      "description": "API Gateway invoke URL — run: terraform output api_gateway_url"
+    },
+    {
+      "key": "access_token",
+      "value": "",
+      "type": "string",
+      "description": "Auto-populated by 'Get Access Token' request"
+    },
+    {
+      "key": "client_id",
+      "value": "max-weather-client",
+      "type": "string"
+    },
+    {
+      "key": "client_secret",
+      "value": "super-secret-key",
+      "type": "string"
+    }
+  ],
+  "item": [
+    {
+      "name": "Health",
+      "item": [
+        {
+          "name": "Health Check",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/health",
+              "host": ["{{base_url}}"],
+              "path": ["health"]
+            },
+            "description": "Public endpoint — no authentication required. Returns service status and timestamp."
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "Auth",
+      "item": [
+        {
+          "name": "Get Access Token",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "var json = pm.response.json();",
+                  "if (json.access_token) {",
+                  "    pm.collectionVariables.set('access_token', json.access_token);",
+                  "    pm.test('Token received and saved', function() {",
+                  "        pm.expect(json.access_token).to.be.a('string');",
+                  "        pm.expect(json.token_type).to.eql('bearer');",
+                  "    });",
+                  "    console.log('Token expires in', json.expires_in, 'seconds');",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/x-www-form-urlencoded"
+              }
+            ],
+            "body": {
+              "mode": "urlencoded",
+              "urlencoded": [
+                {
+                  "key": "username",
+                  "value": "{{client_id}}",
+                  "description": "OAuth2 client_id"
+                },
+                {
+                  "key": "password",
+                  "value": "{{client_secret}}",
+                  "description": "OAuth2 client_secret"
+                }
+              ]
+            },
+            "url": {
+              "raw": "{{base_url}}/token",
+              "host": ["{{base_url}}"],
+              "path": ["token"]
+            },
+            "description": "OAuth2 client_credentials grant. Returns a signed JWT valid for 60 minutes. The test script auto-saves the token to the `access_token` collection variable."
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "Weather",
+      "item": [
+        {
+          "name": "Current Weather by City",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status 200', function() { pm.response.to.have.status(200); });",
+                  "pm.test('Has city field', function() { pm.expect(pm.response.json()).to.have.property('city'); });",
+                  "pm.test('Has temperature', function() { pm.expect(pm.response.json()).to.have.property('temperature_celsius'); });"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{access_token}}",
+                "description": "JWT from /token endpoint"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/weather/current?city=Singapore",
+              "host": ["{{base_url}}"],
+              "path": ["weather", "current"],
+              "query": [
+                {
+                  "key": "city",
+                  "value": "Singapore"
+                }
+              ]
+            },
+            "description": "Returns current weather for a city. Requires Bearer token. Data sourced from Open-Meteo."
+          },
+          "response": []
+        },
+        {
+          "name": "Multi-day Forecast by City",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status 200', function() { pm.response.to.have.status(200); });",
+                  "pm.test('Has forecast array', function() {",
+                  "    var json = pm.response.json();",
+                  "    pm.expect(json.forecast).to.be.an('array').with.lengthOf(3);",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{access_token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/weather/forecast?city=Singapore&days=3",
+              "host": ["{{base_url}}"],
+              "path": ["weather", "forecast"],
+              "query": [
+                {
+                  "key": "city",
+                  "value": "Singapore"
+                },
+                {
+                  "key": "days",
+                  "value": "3"
+                }
+              ]
+            },
+            "description": "Returns a multi-day forecast (1–16 days). Requires Bearer token."
+          },
+          "response": []
+        },
+        {
+          "name": "Current Weather by Coordinates",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{access_token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/weather/coordinates?lat=1.3521&lon=103.8198",
+              "host": ["{{base_url}}"],
+              "path": ["weather", "coordinates"],
+              "query": [
+                {
+                  "key": "lat",
+                  "value": "1.3521",
+                  "description": "Latitude (Singapore)"
+                },
+                {
+                  "key": "lon",
+                  "value": "103.8198",
+                  "description": "Longitude (Singapore)"
+                }
+              ]
+            },
+            "description": "Returns current weather and forecast by lat/lon. Requires Bearer token."
+          },
+          "response": []
+        },
+        {
+          "name": "Unauthorized Request (no token)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Returns 401 without token', function() {",
+                  "    pm.expect(pm.response.code).to.be.oneOf([401, 403]);",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/weather/current?city=Singapore",
+              "host": ["{{base_url}}"],
+              "path": ["weather", "current"],
+              "query": [
+                {
+                  "key": "city",
+                  "value": "Singapore"
+                }
+              ]
+            },
+            "description": "Demonstrates that the Lambda authorizer blocks requests without a valid Bearer token."
+          },
+          "response": []
+        }
+      ]
+    }
+  ]
+}
