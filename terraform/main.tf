@@ -162,6 +162,7 @@ module "addons" {
   aws_access_key_id     = var.aws_access_key_id
   aws_secret_access_key = var.aws_secret_access_key
   jenkins_irsa_role_arn = module.eks.jenkins_irsa_role_arn
+  jwt_secret_arn        = var.jwt_secret_arn
 
   depends_on = [module.eks]
 }

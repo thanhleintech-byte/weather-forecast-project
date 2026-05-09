@@ -32,3 +32,7 @@ variable "aws_secret_access_key" {
 variable "jenkins_irsa_role_arn" {
   type = string
 }
+
+variable "jwt_secret_arn" {
+  type = string
+}

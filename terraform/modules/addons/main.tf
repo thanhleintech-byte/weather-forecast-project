@@ -120,6 +120,51 @@ BOOTSTRAP
 # cluster without needing a kubeconfig file credential.
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# max-weather app secret — JWT signing key pulled from Secrets Manager so
+# the app pod can mount it without baking the value into Terraform state.
+# ---------------------------------------------------------------------------
+
+resource "null_resource" "max_weather_secret" {
+  triggers = {
+    jwt_secret_arn = var.jwt_secret_arn
+  }
+
+  provisioner "local-exec" {
+    command = <<-EOT
+      aws eks update-kubeconfig \
+        --region ${var.aws_region} \
+        --name ${var.cluster_name} \
+        --kubeconfig /tmp/max-weather-kubeconfig
+
+      JWT_VALUE=$(aws secretsmanager get-secret-value \
+        --secret-id "${var.jwt_secret_arn}" \
+        --region ${var.aws_region} \
+        --query SecretString \
+        --output text)
+
+      kubectl --kubeconfig /tmp/max-weather-kubeconfig \
+        create namespace max-weather --dry-run=client -o yaml \
+        | kubectl --kubeconfig /tmp/max-weather-kubeconfig apply -f -
+
+      kubectl --kubeconfig /tmp/max-weather-kubeconfig \
+        create secret generic max-weather-secrets \
+          --namespace=max-weather \
+          --from-literal=jwt-secret="$JWT_VALUE" \
+          --dry-run=client -o yaml \
+        | kubectl --kubeconfig /tmp/max-weather-kubeconfig apply -f -
+    EOT
+
+    environment = {
+      AWS_ACCESS_KEY_ID     = var.aws_access_key_id
+      AWS_SECRET_ACCESS_KEY = var.aws_secret_access_key
+      AWS_DEFAULT_REGION    = var.aws_region
+    }
+  }
+
+  depends_on = [null_resource.argocd_bootstrap]
+}
+
 resource "null_resource" "jenkins_aws_auth" {
   triggers = {
     jenkins_role_arn = var.jenkins_irsa_role_arn
