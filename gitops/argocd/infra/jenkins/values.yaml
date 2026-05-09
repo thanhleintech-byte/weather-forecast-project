@@ -27,6 +27,7 @@ jenkins:
       - aws-credentials:latest
       - junit:latest
       - ws-cleanup:latest
+    jenkinsUrl: "https://jenkins.workaholic.dpdns.org"
     ingress:
       enabled: true
       ingressClassName: nginx
@@ -43,11 +44,6 @@ jenkins:
     JCasC:
       defaultConfig: true
       configScripts:
-        jenkins: |
-          jenkins:
-            systemMessage: "Max Weather CI — managed by JCasC"
-            numExecutors: 0
-            rootUrl: "https://jenkins.workaholic.dpdns.org"
         credentials: |
           credentials:
             system:
