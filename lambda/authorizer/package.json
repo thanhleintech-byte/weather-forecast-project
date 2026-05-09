@@ -1,0 +1,19 @@
+{
+  "name": "max-weather-authorizer",
+  "version": "1.0.0",
+  "description": "JWT Lambda Authorizer for Max Weather API Gateway",
+  "main": "index.js",
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "@aws-sdk/client-secrets-manager": "^3.540.0",
+    "jsonwebtoken": "^9.0.2"
+  },
+  "devDependencies": {
+    "jest": "^29.7.0"
+  },
+  "scripts": {
+    "test": "jest"
+  }
+}

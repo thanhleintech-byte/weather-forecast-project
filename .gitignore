@@ -1,0 +1,25 @@
+# Terraform
+.terraform/
+.terraform.lock.hcl
+terraform.tfvars
+terraform.tfstate
+terraform.tfstate.backup
+*.tfplan
+crash.log
+
+# Lambda build artifact
+terraform/modules/lambda_authorizer/authorizer.zip
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+*.egg-info/
+
+# Node
+node_modules/
+
+# OS
+.DS_Store

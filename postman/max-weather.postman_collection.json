@@ -1,0 +1,286 @@
+{
+  "info": {
+    "name": "Max Weather API",
+    "description": "Complete test suite for the Max Weather forecasting API.\n\nSetup:\n1. Import this collection into Postman.\n2. Create an environment named 'Max Weather' and set:\n   - base_url: your API Gateway URL (e.g. https://abc123.execute-api.us-east-1.amazonaws.com/prod)\n   - client_id: max-weather-client\n   - client_secret: super-secret-key\n3. Run request #1 first — it automatically saves the bearer token.\n4. Run the remaining requests in order.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
+    "_postman_id": "max-weather-v1"
+  },
+  "variable": [
+    {
+      "key": "base_url",
+      "value": "https://YOUR_API_GW_ID.execute-api.us-east-1.amazonaws.com/prod",
+      "type": "string"
+    },
+    {
+      "key": "client_id",
+      "value": "max-weather-client",
+      "type": "string"
+    },
+    {
+      "key": "client_secret",
+      "value": "super-secret-key",
+      "type": "string"
+    },
+    {
+      "key": "bearer_token",
+      "value": "",
+      "type": "string"
+    }
+  ],
+  "item": [
+    {
+      "name": "1. Health Check (no auth required)",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "pm.test('Status 200', () => pm.response.to.have.status(200));",
+              "pm.test('Body has status ok', () => {",
+              "    const body = pm.response.json();",
+              "    pm.expect(body.status).to.eql('ok');",
+              "    pm.expect(body.timestamp).to.be.a('string');",
+              "});"
+            ],
+            "type": "text/javascript"
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "url": "{{base_url}}/health",
+        "description": "Liveness check — no authentication needed."
+      }
+    },
+    {
+      "name": "2. Get Access Token (OAuth2 client_credentials)",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "pm.test('Status 200', () => pm.response.to.have.status(200));",
+              "pm.test('Response contains access_token', () => {",
+              "    const body = pm.response.json();",
+              "    pm.expect(body.access_token).to.be.a('string').and.not.empty;",
+              "    pm.expect(body.token_type).to.eql('bearer');",
+              "    pm.expect(body.expires_in).to.be.a('number');",
+              "    // Save token for subsequent requests",
+              "    pm.collectionVariables.set('bearer_token', body.access_token);",
+              "    pm.environment.set('bearer_token', body.access_token);",
+              "    console.log('Token saved:', body.access_token.substring(0, 20) + '...');",
+              "});"
+            ],
+            "type": "text/javascript"
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/x-www-form-urlencoded"
+          }
+        ],
+        "body": {
+          "mode": "urlencoded",
+          "urlencoded": [
+            {
+              "key": "username",
+              "value": "{{client_id}}"
+            },
+            {
+              "key": "password",
+              "value": "{{client_secret}}"
+            }
+          ]
+        },
+        "url": "{{base_url}}/token",
+        "description": "POST with client_id (username) and client_secret (password).\nThe test script automatically saves the returned token for use in later requests."
+      }
+    },
+    {
+      "name": "3. Current Weather — Singapore",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "pm.test('Status 200', () => pm.response.to.have.status(200));",
+              "pm.test('Response has weather fields', () => {",
+              "    const body = pm.response.json();",
+              "    pm.expect(body.city).to.be.a('string');",
+              "    pm.expect(body.temperature_celsius).to.be.a('number');",
+              "    pm.expect(body.windspeed_kmh).to.be.a('number');",
+              "    pm.expect(body.latitude).to.be.a('number');",
+              "    pm.expect(body.longitude).to.be.a('number');",
+              "});"
+            ],
+            "type": "text/javascript"
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "Bearer {{bearer_token}}"
+          }
+        ],
+        "url": {
+          "raw": "{{base_url}}/weather/current?city=Singapore",
+          "host": ["{{base_url}}"],
+          "path": ["weather", "current"],
+          "query": [{ "key": "city", "value": "Singapore" }]
+        },
+        "description": "Fetch the current weather for Singapore. Requires Bearer token."
+      }
+    },
+    {
+      "name": "4. 5-Day Forecast — London",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "pm.test('Status 200', () => pm.response.to.have.status(200));",
+              "pm.test('Forecast has 5 days', () => {",
+              "    const body = pm.response.json();",
+              "    pm.expect(body.forecast).to.be.an('array').with.lengthOf(5);",
+              "    body.forecast.forEach(day => {",
+              "        pm.expect(day.date).to.be.a('string');",
+              "        pm.expect(day.temp_max_celsius).to.be.a('number');",
+              "        pm.expect(day.temp_min_celsius).to.be.a('number');",
+              "    });",
+              "});"
+            ],
+            "type": "text/javascript"
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "Bearer {{bearer_token}}"
+          }
+        ],
+        "url": {
+          "raw": "{{base_url}}/weather/forecast?city=London&days=5",
+          "host": ["{{base_url}}"],
+          "path": ["weather", "forecast"],
+          "query": [
+            { "key": "city", "value": "London" },
+            { "key": "days", "value": "5" }
+          ]
+        },
+        "description": "5-day forecast for London."
+      }
+    },
+    {
+      "name": "5. Weather by Coordinates — Singapore (lat/lon)",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "pm.test('Status 200', () => pm.response.to.have.status(200));",
+              "pm.test('Response contains current and forecast', () => {",
+              "    const body = pm.response.json();",
+              "    pm.expect(body.current).to.be.an('object');",
+              "    pm.expect(body.current.temperature_celsius).to.be.a('number');",
+              "    pm.expect(body.forecast).to.be.an('array');",
+              "    pm.expect(body.latitude).to.eql(1.3521);",
+              "    pm.expect(body.longitude).to.eql(103.8198);",
+              "});"
+            ],
+            "type": "text/javascript"
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "Bearer {{bearer_token}}"
+          }
+        ],
+        "url": {
+          "raw": "{{base_url}}/weather/coordinates?lat=1.3521&lon=103.8198&days=3",
+          "host": ["{{base_url}}"],
+          "path": ["weather", "coordinates"],
+          "query": [
+            { "key": "lat", "value": "1.3521" },
+            { "key": "lon", "value": "103.8198" },
+            { "key": "days", "value": "3" }
+          ]
+        },
+        "description": "Weather by lat/lon — Singapore coordinates."
+      }
+    },
+    {
+      "name": "6. Unauthorized Request (no token) — expect 401",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "pm.test('Status 401 when no token provided', () => {",
+              "    pm.response.to.have.status(401);",
+              "});"
+            ],
+            "type": "text/javascript"
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "url": {
+          "raw": "{{base_url}}/weather/current?city=Singapore",
+          "host": ["{{base_url}}"],
+          "path": ["weather", "current"],
+          "query": [{ "key": "city", "value": "Singapore" }]
+        },
+        "description": "Should return 401 because no Authorization header is included."
+      }
+    },
+    {
+      "name": "7. Invalid Credentials — expect 401",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "pm.test('Status 401 for bad credentials', () => {",
+              "    pm.response.to.have.status(401);",
+              "});"
+            ],
+            "type": "text/javascript"
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/x-www-form-urlencoded"
+          }
+        ],
+        "body": {
+          "mode": "urlencoded",
+          "urlencoded": [
+            { "key": "username", "value": "bad-client" },
+            { "key": "password", "value": "wrong-secret" }
+          ]
+        },
+        "url": "{{base_url}}/token",
+        "description": "Should return 401 because the client credentials are invalid."
+      }
+    }
+  ]
+}
