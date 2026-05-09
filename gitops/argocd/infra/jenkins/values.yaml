@@ -1,7 +1,7 @@
 jenkins:
   controller:
     image:
-      tag: "2.440.3-lts"
+      tag: "2.504.1-lts"
     serviceType: ClusterIP
     admin:
       username: admin
