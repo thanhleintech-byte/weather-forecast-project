@@ -23,3 +23,7 @@ node_modules/
 
 # OS
 .DS_Store
+
+# Helm dependency downloads (run `helm dep update` locally — not committed)
+gitops/argocd/infra/*/charts/
+gitops/argocd/infra/*/Chart.lock

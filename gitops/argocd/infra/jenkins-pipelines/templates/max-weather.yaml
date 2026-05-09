@@ -1,0 +1,40 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: jenkins-casc-max-weather-pipeline
+  namespace: {{ .Release.Namespace }}
+  labels:
+    jenkins-jenkins-config: "true"
+data:
+  max-weather-pipeline.yaml: |
+    jobs:
+      - script: |
+          multibranchPipelineJob('{{ .Values.pipeline.name }}') {
+            description('Max Weather CI/CD — sourced from GitHub')
+            branchSources {
+              github {
+                id('max-weather-src')
+                repoOwner('{{ .Values.pipeline.repoOwner }}')
+                repository('{{ .Values.pipeline.repository }}')
+                credentialsId('{{ .Values.pipeline.credentialsId }}')
+                traits {
+                  gitHubBranchDiscovery { strategyId(1) }
+                  gitHubPullRequestDiscovery { strategyId(1) }
+                }
+              }
+            }
+            factory {
+              workflowBranchProjectFactory {
+                scriptPath('{{ .Values.pipeline.jenkinsfilePath }}')
+              }
+            }
+            orphanedItemStrategy {
+              discardOldItems {
+                daysToKeep({{ .Values.pipeline.daysToKeep }})
+                numToKeep({{ .Values.pipeline.numToKeep }})
+              }
+            }
+            triggers {
+              periodicFolderTrigger { interval('{{ .Values.pipeline.scanInterval }}') }
+            }
+          }

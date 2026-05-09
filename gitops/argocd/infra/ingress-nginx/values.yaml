@@ -1,0 +1,14 @@
+ingress-nginx:
+  controller:
+    replicaCount: 1
+    resources:
+      requests:
+        cpu: 100m
+        memory: 90Mi
+    config:
+      use-forwarded-headers: "true"
+      allow-snippet-annotations: "false"
+      log-format-upstream: >-
+        {"time":"$time_iso8601","remote_addr":"$remote_addr","request_method":"$request_method",
+        "request_uri":"$request_uri","status":$status,"body_bytes_sent":$body_bytes_sent,
+        "request_time":$request_time}

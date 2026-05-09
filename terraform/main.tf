@@ -33,6 +33,22 @@ module "iam" {
 data "aws_caller_identity" "current" {}
 
 # ---------------------------------------------------------------------------
+# Helm provider — authenticates to EKS using the AWS CLI token exchange
+# ---------------------------------------------------------------------------
+
+provider "helm" {
+  kubernetes {
+    host                   = module.eks.cluster_endpoint
+    cluster_ca_certificate = base64decode(module.eks.cluster_certificate_authority_data)
+    exec {
+      api_version = "client.authentication.k8s.io/v1beta1"
+      command     = "aws"
+      args        = ["eks", "get-token", "--cluster-name", module.eks.cluster_name, "--region", var.aws_region]
+    }
+  }
+}
+
+# ---------------------------------------------------------------------------
 # IRSA Role — created after EKS so the OIDC provider ARN is available
 # ---------------------------------------------------------------------------
 
@@ -129,6 +145,24 @@ module "cloudwatch" {
   environment           = var.environment
   log_retention_days    = var.log_retention_days
   error_alarm_threshold = var.error_alarm_threshold
+}
+
+# ---------------------------------------------------------------------------
+# Cluster add-ons — ArgoCD (GitOps) + Jenkins (CI/CD)
+# ---------------------------------------------------------------------------
+
+module "addons" {
+  source = "./modules/addons"
+
+  aws_region            = var.aws_region
+  cluster_name          = module.eks.cluster_name
+  github_repo_url       = var.github_repo_url
+  github_username       = var.github_username
+  github_pat            = var.github_pat
+  aws_access_key_id     = var.aws_access_key_id
+  aws_secret_access_key = var.aws_secret_access_key
+
+  depends_on = [module.eks]
 }
 
 # ---------------------------------------------------------------------------

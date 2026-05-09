@@ -1,17 +1,17 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: max-weather
-  namespace: max-weather
+  name: {{ .Chart.Name }}
+  namespace: {{ .Release.Namespace }}
   labels:
-    app.kubernetes.io/name: max-weather
-    app.kubernetes.io/version: "1.0.0"
+    app.kubernetes.io/name: {{ .Chart.Name }}
+    app.kubernetes.io/version: {{ .Chart.AppVersion | quote }}
     app.kubernetes.io/component: api
 spec:
-  replicas: 2
+  replicas: {{ .Values.replicaCount }}
   selector:
     matchLabels:
-      app.kubernetes.io/name: max-weather
+      app.kubernetes.io/name: {{ .Chart.Name }}
   strategy:
     type: RollingUpdate
     rollingUpdate:
@@ -20,53 +20,46 @@ spec:
   template:
     metadata:
       labels:
-        app.kubernetes.io/name: max-weather
-        app.kubernetes.io/version: "1.0.0"
+        app.kubernetes.io/name: {{ .Chart.Name }}
+        app.kubernetes.io/version: {{ .Chart.AppVersion | quote }}
       annotations:
-        # Force pod restart when config changes
         prometheus.io/scrape: "true"
-        prometheus.io/port: "8000"
+        prometheus.io/port: {{ .Values.service.targetPort | quote }}
     spec:
-      serviceAccountName: max-weather-sa
-      # Prevent scheduling on nodes already running this pod (AZ spread)
+      serviceAccountName: {{ .Values.serviceAccount.name }}
       topologySpreadConstraints:
         - maxSkew: 1
           topologyKey: topology.kubernetes.io/zone
           whenUnsatisfiable: DoNotSchedule
           labelSelector:
             matchLabels:
-              app.kubernetes.io/name: max-weather
+              app.kubernetes.io/name: {{ .Chart.Name }}
       containers:
-        - name: max-weather
-          image: <ECR_ACCOUNT_ID>.dkr.ecr.<AWS_REGION>.amazonaws.com/max-weather:latest
-          imagePullPolicy: Always
+        - name: {{ .Chart.Name }}
+          image: {{ .Values.image.repository }}:{{ .Values.image.tag }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
           ports:
-            - containerPort: 8000
+            - containerPort: {{ .Values.service.targetPort }}
               protocol: TCP
           env:
             - name: JWT_SECRET
               valueFrom:
                 secretKeyRef:
-                  name: max-weather-secrets
+                  name: {{ .Values.secretName }}
                   key: jwt-secret
           resources:
-            requests:
-              cpu: "100m"
-              memory: "128Mi"
-            limits:
-              cpu: "500m"
-              memory: "512Mi"
+            {{- toYaml .Values.resources | nindent 12 }}
           livenessProbe:
             httpGet:
               path: /health
-              port: 8000
+              port: {{ .Values.service.targetPort }}
             initialDelaySeconds: 10
             periodSeconds: 15
             failureThreshold: 3
           readinessProbe:
             httpGet:
               path: /health
-              port: 8000
+              port: {{ .Values.service.targetPort }}
             initialDelaySeconds: 5
             periodSeconds: 10
             failureThreshold: 3

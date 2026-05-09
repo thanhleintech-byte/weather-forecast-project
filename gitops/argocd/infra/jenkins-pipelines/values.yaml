@@ -1,0 +1,9 @@
+pipeline:
+  name: max-weather
+  repoOwner: thanhleintech-byte
+  repository: weather-forecast-project
+  credentialsId: github-pat
+  jenkinsfilePath: gitops/jenkins/Jenkinsfile
+  scanInterval: "5m"
+  daysToKeep: 7
+  numToKeep: 3

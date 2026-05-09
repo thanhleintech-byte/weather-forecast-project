@@ -1,0 +1,71 @@
+jenkins:
+  controller:
+    image:
+      tag: "2.440.3-lts"
+    serviceType: ClusterIP
+    admin:
+      username: admin
+      password: changeme123!
+    resources:
+      requests:
+        cpu: 500m
+        memory: 512Mi
+      limits:
+        cpu: 1500m
+        memory: 2Gi
+    installPlugins:
+      - kubernetes:4302.v5d5ef7d25e77
+      - workflow-aggregator:600.vb_57cdd26fdd7
+      - git:5.4.1
+      - configuration-as-code:1887.v39e34b_a_0d7f0
+      - job-dsl:1.87
+      - github:1.38.0
+      - github-branch-source:1797.v86fdb_4d57d43
+      - pipeline-aws:1.43
+      - docker-workflow:572.v950f58993843
+      - plain-credentials:182.v468b_97b_9dcb_8
+      - aws-credentials:231.v08a_59f17d742
+    envFrom:
+      - secretRef:
+          name: jenkins-credentials
+    sidecars:
+      configAutoReload:
+        enabled: true
+    JCasC:
+      defaultConfig: true
+      configScripts:
+        credentials: |
+          credentials:
+            system:
+              domainCredentials:
+                - credentials:
+                    - usernamePassword:
+                        scope: GLOBAL
+                        id: "github-pat"
+                        description: "GitHub PAT — weather-forecast-project"
+                        username: "thanhleintech-byte"
+                        password: "${GITHUB_PAT}"
+                    - usernamePassword:
+                        scope: GLOBAL
+                        id: "aws-credentials"
+                        description: "AWS credentials — ECR push + EKS deploy"
+                        username: "${AWS_ACCESS_KEY_ID}"
+                        password: "${AWS_SECRET_ACCESS_KEY}"
+                    - string:
+                        scope: GLOBAL
+                        id: "aws-region"
+                        description: "AWS region"
+                        secret: "ap-south-1"
+  agent:
+    enabled: true
+    namespace: jenkins
+  persistence:
+    enabled: true
+    storageClass: gp2
+    size: 8Gi
+  serviceAccount:
+    create: true
+    name: jenkins
+  rbac:
+    create: true
+    readSecrets: true

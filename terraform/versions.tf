@@ -10,6 +10,14 @@ terraform {
       source  = "hashicorp/archive"
       version = "~> 2.4"
     }
+    helm = {
+      source  = "hashicorp/helm"
+      version = "~> 2.13"
+    }
+    null = {
+      source  = "hashicorp/null"
+      version = "~> 3.2"
+    }
   }
 
   # Uncomment to use S3 backend for team collaboration

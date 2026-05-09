@@ -1,0 +1,3 @@
+# Renamed: see bootstrap.yaml — this file is no longer used.
+# The null_resource.argocd_application now applies
+# terraform/modules/addons/bootstrap.yaml instead.

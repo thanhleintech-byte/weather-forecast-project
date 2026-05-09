@@ -116,5 +116,38 @@ variable "error_alarm_threshold" {
 variable "jwt_secret_arn" {
   description = "ARN of the AWS Secrets Manager secret containing the JWT signing secret"
   type        = string
-  # Set in terraform.tfvars after creating the secret manually or via the console
+}
+
+# ---------------------------------------------------------------------------
+# Add-ons — ArgoCD + Jenkins
+# ---------------------------------------------------------------------------
+
+variable "github_repo_url" {
+  description = "HTTPS URL of the GitHub repository used by ArgoCD and Jenkins"
+  type        = string
+  default     = "https://github.com/thanhleintech-byte/weather-forecast-project.git"
+}
+
+variable "github_username" {
+  description = "GitHub username that owns the repository"
+  type        = string
+  default     = "thanhleintech-byte"
+}
+
+variable "github_pat" {
+  description = "GitHub Personal Access Token (repo scope) for Jenkins pipeline access"
+  type        = string
+  sensitive   = true
+}
+
+variable "aws_access_key_id" {
+  description = "AWS access key ID used by Jenkins for ECR push and EKS deploy"
+  type        = string
+  sensitive   = true
+}
+
+variable "aws_secret_access_key" {
+  description = "AWS secret access key used by Jenkins for ECR push and EKS deploy"
+  type        = string
+  sensitive   = true
 }
