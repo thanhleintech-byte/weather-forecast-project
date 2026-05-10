@@ -1,0 +1,5 @@
+apiVersion: v2
+name: max-weather-apps
+description: ArgoCD Applications for the Max Weather platform (app-of-apps)
+type: application
+version: 0.1.0

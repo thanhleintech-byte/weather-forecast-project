@@ -1,0 +1,93 @@
+{{- if .Values.scheduledScaling.enabled }}
+# Scheduled scaling — patches the HPA's minReplicas at fixed times so the
+# floor moves up before predicted traffic peaks (morning forecast checks)
+# and back down overnight. The HPA still reacts to actual load between
+# schedules; this just shifts the lower bound.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ .Values.scheduledScaling.serviceAccount.name }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app.kubernetes.io/name: {{ .Chart.Name }}
+    app.kubernetes.io/component: scaler
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ .Values.scheduledScaling.serviceAccount.name }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app.kubernetes.io/name: {{ .Chart.Name }}
+    app.kubernetes.io/component: scaler
+rules:
+  - apiGroups: ["autoscaling"]
+    resources: ["horizontalpodautoscalers"]
+    resourceNames: [{{ .Chart.Name | quote }}]
+    verbs: ["get", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ .Values.scheduledScaling.serviceAccount.name }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app.kubernetes.io/name: {{ .Chart.Name }}
+    app.kubernetes.io/component: scaler
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ .Values.scheduledScaling.serviceAccount.name }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ .Values.scheduledScaling.serviceAccount.name }}
+    namespace: {{ .Release.Namespace }}
+{{- range .Values.scheduledScaling.schedules }}
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: {{ $.Chart.Name }}-scaler-{{ .name }}
+  namespace: {{ $.Release.Namespace }}
+  labels:
+    app.kubernetes.io/name: {{ $.Chart.Name }}
+    app.kubernetes.io/component: scaler
+spec:
+  schedule: {{ .cron | quote }}
+  {{- with .timeZone }}
+  timeZone: {{ . | quote }}
+  {{- end }}
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 1
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      template:
+        metadata:
+          labels:
+            app.kubernetes.io/name: {{ $.Chart.Name }}
+            app.kubernetes.io/component: scaler
+        spec:
+          serviceAccountName: {{ $.Values.scheduledScaling.serviceAccount.name }}
+          restartPolicy: OnFailure
+          containers:
+            - name: kubectl
+              image: {{ $.Values.scheduledScaling.image }}
+              command: ["kubectl"]
+              args:
+                - patch
+                - hpa
+                - {{ $.Chart.Name }}
+                - --namespace={{ $.Release.Namespace }}
+                - --type=merge
+                - '--patch={"spec":{"minReplicas":{{ .minReplicas }}}}'
+              resources:
+                requests:
+                  cpu: 10m
+                  memory: 32Mi
+                limits:
+                  cpu: 100m
+                  memory: 128Mi
+{{- end }}
+{{- end }}

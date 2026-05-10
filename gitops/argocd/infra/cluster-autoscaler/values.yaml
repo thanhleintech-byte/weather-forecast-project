@@ -1,0 +1,35 @@
+cluster-autoscaler:
+  awsRegion: ap-south-1
+
+  # Auto-discover the managed node group by tag (set on the node group by the
+  # eks terraform module: k8s.io/cluster-autoscaler/<cluster-name>=owned).
+  autoDiscovery:
+    clusterName: max-weather-production
+
+  rbac:
+    serviceAccount:
+      create: true
+      name: cluster-autoscaler
+      annotations:
+        eks.amazonaws.com/role-arn: "arn:aws:iam::047750375423:role/max-weather-production-cluster-autoscaler-role"
+
+  extraArgs:
+    # Match the autoscaler image to the cluster's k8s minor version (1.32).
+    # Behaviour tweaks for faster reaction to morning traffic spikes:
+    scale-down-delay-after-add: 5m
+    scale-down-unneeded-time: 5m
+    skip-nodes-with-system-pods: "false"
+    balance-similar-node-groups: "true"
+    expander: least-waste
+
+  resources:
+    requests:
+      cpu: 100m
+      memory: 300Mi
+    limits:
+      cpu: 200m
+      memory: 500Mi
+
+  # Avoid evicting the autoscaler itself during scale-down operations.
+  podAnnotations:
+    cluster-autoscaler.kubernetes.io/safe-to-evict: "false"

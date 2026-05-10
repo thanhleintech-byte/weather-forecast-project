@@ -55,3 +55,18 @@ serviceAccount:
   name: max-weather-sa
 
 secretName: max-weather-secrets
+
+# Scheduled scaling — CronJobs that bump the HPA's minReplicas up before
+# predicted peaks and back down overnight. The HPA still does reactive
+# (CPU/memory-driven) scaling between schedules; this just lifts the floor.
+scheduledScaling:
+  enabled: false
+  image: bitnami/kubectl:1.32
+  serviceAccount:
+    name: max-weather-scaler
+  schedules: []
+  # Example (set per-environment in values-prod.yaml):
+  # - name: morning-up
+  #   cron: "0 6 * * *"
+  #   timeZone: Asia/Kolkata
+  #   minReplicas: 5

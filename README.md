@@ -116,19 +116,90 @@ External:
 | **VPC** | Multi-AZ. 2 public subnets (NLB, NAT GWs) + 2 private subnets (EKS nodes). One NAT GW per AZ to eliminate cross-AZ egress costs. |
 | **EKS Cluster** | Managed control plane. Worker nodes: `t3.medium`, min 2 / desired 3 / max 10. Add-ons: CoreDNS, kube-proxy, VPC-CNI, EBS CSI. IRSA via OIDC provider. |
 | **Nginx Ingress** | NLB → Nginx Ingress Controller → ClusterIP Service. Rate limit: 50 rps per client. JSON access logs to CloudWatch. |
-| **HPA** | `autoscaling/v2`. CPU 70% and memory 80% targets. Scale-up: +2 pods/60 s. Scale-down: −1 pod/60 s, 300 s stabilisation window. |
+| **HPA** | `autoscaling/v2`. CPU 70% and memory 80% targets. Scale-up: +2 pods/60 s. Scale-down: −1 pod/60 s, 300 s stabilisation window. See *Scaling — Pod level (reactive)*. |
+| **Cluster Autoscaler** | Deployed via ArgoCD into `kube-system`. Drives the EKS node group's ASG up/down based on pending pods. IRSA-authenticated, ASG discovery by tag. See *Scaling — Node level (reactive)*. |
+| **Scheduled scaler** | Two `CronJob`s in the `max-weather` namespace that patch the HPA's `minReplicas` at fixed times (05:30 / 22:00 IST). See *Scaling — Pod level (scheduled)*. |
 | **Fluent Bit** | DaemonSet. Forwards JSON-structured pod stdout to `/eks/max-weather/application`. |
 | **ECR** | Private registry. Scan on push, AES-256 encryption, lifecycle policy: keep 10 tagged / expire untagged after 7 days. |
 
 ### High Availability
 
-| Mechanism | Configuration |
+The platform is HA at **two layers** — the worker nodes are spread across availability zones, and the application pods are forced to spread across those zones too. Either layer alone is insufficient: HA nodes don't help if every pod lands in one AZ, and HA pods don't help if every node is in one AZ.
+
+#### Node level — across availability zones
+
+| Mechanism | Where | Detail |
+|---|---|---|
+| Multi-AZ VPC | `terraform/modules/vpc/main.tf` | 2 public + 2 private subnets, each pair in a different AZ (`ap-south-1a`, `ap-south-1b`). |
+| Node group spans both AZs | `terraform/modules/eks/main.tf` (`aws_eks_node_group.this.subnet_ids = var.private_subnet_ids`) | EKS-managed ASG balances capacity across the supplied subnets, so node loss in one AZ never takes the whole worker pool down. |
+| One NAT GW per AZ | `terraform/modules/vpc/main.tf` (`single_nat_gateway = false` in prod) | Egress from a private subnet stays in-AZ. A NAT failure in one AZ doesn't break egress for pods in the other. |
+| EKS control plane | AWS-managed | Multi-AZ by default — managed by AWS, not us. |
+
+#### Pod level — scheduled across availability zones
+
+| Mechanism | Where | Detail |
+|---|---|---|
+| Topology spread constraint | `gitops/argocd/microservices/max-weather/templates/deployment.yaml` | `topology.kubernetes.io/zone`, `maxSkew: 1`, `whenUnsatisfiable: DoNotSchedule`. Pods are scheduled so that at any time the per-zone count differs by at most one. `DoNotSchedule` is strict — the scheduler refuses to place a pod that would break the skew rather than degrading silently. |
+| Pod Disruption Budget | `gitops/argocd/microservices/max-weather/templates/pdb.yaml` | `minAvailable: 1` (prod). Voluntary disruptions (node drain, autoscaler scale-down, rolling update) cannot evict pods if doing so would leave fewer than 1 available. |
+| Rolling update strategy | `templates/deployment.yaml` | `maxUnavailable: 1, maxSurge: 1`. New pods come up before old ones go down. |
+| Readiness gating | `templates/deployment.yaml` | The Service only routes to pods passing `readinessProbe`, so traffic never hits a pod that isn't ready. |
+
+### Scaling
+
+The morning forecast-check spike is handled by **layered scaling** along two axes — *what* scales (pods vs nodes) and *what triggers it* (live load vs the clock). Reactive scaling reacts to actual traffic; scheduled scaling pre-positions capacity before predictable peaks so cold-start latency doesn't show up in user-visible response times.
+
+|  | Pod level | Node level |
+|---|---|---|
+| **Reactive** (load-driven) | HPA on CPU + memory | Cluster Autoscaler |
+| **Scheduled** (clock-driven) | CronJobs patching the HPA's `minReplicas` | Cascades from scheduled pod scale-up — once HPA's floor rises, CA provisions nodes to fit the new pods |
+
+#### Pod level — reactive (HPA)
+
+`gitops/argocd/microservices/max-weather/templates/hpa.yaml`, enabled in `values-prod.yaml`:
+
+| Setting | Value |
 |---|---|
-| Multi-AZ pod spread | `topologySpreadConstraints` with `maxSkew: 1` |
-| Zero-downtime deploys | Rolling update `maxUnavailable=1, maxSurge=1` |
-| Node drain protection | `PodDisruptionBudget` `minAvailable=1` |
-| Traffic routing | `readinessProbe` gates pod inclusion in Service endpoints |
-| Horizontal scaling | HPA handles morning traffic peaks, scales down overnight |
+| API | `autoscaling/v2` |
+| CPU target | 70% utilisation |
+| Memory target | 80% utilisation |
+| `minReplicas` / `maxReplicas` | 2 / 10 (floor moves at scheduled times — see below) |
+| Scale-up policy | `+2 pods / 60s`, 60s stabilisation |
+| Scale-down policy | `-1 pod / 60s`, 300s stabilisation |
+
+The asymmetric stabilisation windows mean we add capacity quickly and shed it cautiously, which avoids flapping when traffic dips briefly mid-peak.
+
+#### Node level — reactive (Cluster Autoscaler)
+
+`gitops/argocd/infra/cluster-autoscaler/` (Helm wrapper around the upstream `kubernetes/autoscaler` chart, deployed to `kube-system` by ArgoCD).
+
+| Mechanism | Detail |
+|---|---|
+| Discovery | The managed node group carries `k8s.io/cluster-autoscaler/<cluster>=owned` and `k8s.io/cluster-autoscaler/enabled=true` tags (set in `terraform/modules/eks/main.tf`). The autoscaler discovers the ASG by tag — no static cluster-name list to maintain. |
+| AWS access | IRSA. `terraform/modules/eks/main.tf` creates the role `<cluster>-cluster-autoscaler-role` with a least-privilege policy: `Describe*` on EC2/ASG/EKS, plus `SetDesiredCapacity` / `TerminateInstanceInAutoScalingGroup` *only* on ASGs tagged for this cluster (the `aws:ResourceTag/k8s.io/cluster-autoscaler/<cluster> = owned` condition). |
+| Scale-up trigger | Pending pods that can't fit on existing nodes (e.g. when HPA increases replica count past current node capacity). |
+| Scale-down trigger | A node is under-utilised for `scale-down-unneeded-time` (5 min) AND its pods can be rescheduled elsewhere. `scale-down-delay-after-add: 5m` prevents thrashing immediately after a scale-up. |
+| Bounds | The node group's `min_size` / `max_size` (2 / 10 in prod) — the autoscaler can't go below or above what Terraform set. `desired_size` is in `lifecycle.ignore_changes` so subsequent `terraform apply`s don't fight the autoscaler. |
+| Expander | `least-waste` — when multiple node group choices could fit the pending pods, pick the one that leaves the smallest amount of unused CPU/memory. |
+
+#### Pod level — scheduled (CronJobs)
+
+`gitops/argocd/microservices/max-weather/templates/scheduled-scaler.yaml`, configured in `values-prod.yaml`:
+
+| Schedule | Time (Asia/Kolkata) | New `minReplicas` |
+|---|---|---|
+| `morning-up` | 05:30 daily | 5 |
+| `night-down` | 22:00 daily | 2 |
+
+A `CronJob` runs a single `kubectl patch hpa max-weather --type=merge --patch '{"spec":{"minReplicas":N}}'`. It uses a dedicated ServiceAccount (`max-weather-scaler`) bound to a Role that allows only `get`/`patch` on the one named HPA — no broader cluster privileges.
+
+The HPA continues reactive scaling between these schedules; the cron just shifts the lower bound. Concretely:
+- 05:30 → cron sets `minReplicas=5`. HPA immediately scales pods up to 5 (or higher if load already demands more). If the cluster doesn't have room for the new pods, Cluster Autoscaler adds a node.
+- During the day → if traffic exceeds what 5 pods can handle, HPA scales further (up to `maxReplicas=10`) and CA adds nodes to fit. If traffic stays below CPU/memory targets, HPA holds at 5.
+- 22:00 → cron sets `minReplicas=2`. HPA scales down (subject to the 300s stabilisation window). After ~10 minutes of idle nodes, CA scales the ASG back down.
+
+This is the "node-level scheduled scaling" requirement satisfied **indirectly** — there's no second cron that resizes the node group itself, because Cluster Autoscaler will follow the pod count automatically. Adding a direct ASG cron would be redundant and could fight the autoscaler.
+
+> **Disabling for staging:** `scheduledScaling.enabled: false` is the default in `values.yaml`, so the staging install does not create the CronJobs or RBAC.
 
 ### Security Posture
 
@@ -166,9 +237,10 @@ max-weather/
 │       ├── api_gateway/                    # REST API + TOKEN authorizer + routes
 │       └── addons/                         # ArgoCD + Jenkins via Helm
 ├── gitops/argocd/
-│   ├── bootstrap.yaml                      # ArgoCD root app-of-apps
-│   ├── infra/                              # ingress-nginx, jenkins, metrics-server
-│   └── microservices/max-weather/          # Helm chart (deployment, service, ingress, HPA, PDB)
+│   ├── bootstrap.yaml                      # Single root Application — only file terraform applies
+│   ├── apps/                               # Helm chart producing the child Applications
+│   ├── infra/                              # ingress-nginx, jenkins, metrics-server, cluster-autoscaler
+│   └── microservices/max-weather/          # Helm chart (deployment, service, ingress, HPA, PDB, scheduled-scaler)
 ├── lambda/authorizer/                      # Node.js 20.x JWT authorizer
 │   ├── index.js
 │   └── package.json
@@ -289,25 +361,69 @@ docker push $ECR_URL:latest
 
 Terraform's responsibility ends at handing control to ArgoCD. From that point, all cluster state is driven from Git.
 
+The bootstrap is structured as a strict **app-of-apps**: terraform applies exactly one ArgoCD `Application` (the "root"), and that root app installs a Helm chart whose only output is more `Application` CRs — one per platform component. Adding or removing a platform component is therefore a pure GitOps change: drop a template into `gitops/argocd/apps/templates/` and commit. No terraform change required.
+
+```
+gitops/argocd/
+  bootstrap.yaml                ← root Application (terraform applies just this one file)
+  apps/                         ← Helm chart that emits one child Application per component
+    Chart.yaml
+    values.yaml                 ← repoURL/revision get overridden by the root via helm.values
+    templates/
+      metrics-server.yaml
+      ingress-nginx.yaml
+      cluster-autoscaler.yaml
+      jenkins.yaml
+      jenkins-pipelines.yaml
+      max-weather-prod.yaml
+  infra/                        ← actual Helm charts each child Application points at
+  microservices/max-weather/
+```
+
 ```
 terraform apply
       │
-      ├─1─► helm install argocd              (ArgoCD controller running in EKS)
+      ├─1─► helm install argocd                    (ArgoCD controller running in EKS)
       │
-      ├─2─► kubectl create secret            jenkins-credentials  (namespace: jenkins)
-      │                                      max-weather-secrets  (namespace: max-weather)
+      ├─2─► kubectl create secret                  jenkins-credentials   (namespace: jenkins)
+      │                                            jenkins-admin-secret  (namespace: jenkins)
+      │                                            max-weather-secrets   (namespace: max-weather)
       │
-      ├─3─► kubectl apply bootstrap.yaml     (ArgoCD Application CRs — app-of-apps)
+      ├─3─► kubectl apply gitops/argocd/bootstrap.yaml
+      │       (single root Application — terraform substitutes GITHUB_REPO_URL once
+      │        and passes it through as a Helm value to the apps chart)
       │           │
-      │           │  ArgoCD syncs from GitHub repo (gitops/argocd/)
+      │           ▼
+      │     ArgoCD reconciles the root Application
+      │           │
+      │           │  ArgoCD reads the Helm chart at gitops/argocd/apps/, which renders
+      │           │  one Application per template. Each child Application uses the same
+      │           │  repoURL (via {{ .Values.repoURL }}) so the URL lives in exactly one place.
       │           │
       │           ├──► metrics-server        → kube-system
       │           ├──► ingress-nginx         → ingress-nginx      (creates public NLB)
+      │           ├──► cluster-autoscaler    → kube-system        (drives ASG scale-up/down)
       │           ├──► jenkins               → jenkins            (Helm, reads jenkins-credentials secret)
       │           ├──► jenkins-pipelines     → jenkins            (registers pipeline job via Job DSL)
-      │           └──► max-weather-prod      → max-weather        (Helm chart: Deployment, Service, Ingress, HPA, PDB)
+      │           └──► max-weather-prod      → max-weather        (Deployment, Service, Ingress, HPA, PDB, scheduled scaler)
       │
-      └─4─► patch aws-auth configmap         (Jenkins IRSA role → system:masters)
+      └─4─► patch aws-auth configmap               (Jenkins IRSA role → system:masters)
+```
+
+The repo URL flows through the chain in one direction:
+
+```
+terraform: var.github_repo_url
+   │
+   ▼ string substitution at apply time
+gitops/argocd/bootstrap.yaml
+   │  spec.source.repoURL: <url>
+   │  spec.source.helm.values: { repoURL: <url>, revision: main }
+   ▼
+gitops/argocd/apps/templates/*.yaml
+   │  source.repoURL: {{ .Values.repoURL }}
+   ▼
+infra/* and microservices/max-weather/* (the actual workloads)
 ```
 
 Any subsequent change to a file under `gitops/argocd/` merged to `main` is automatically reconciled to the cluster by ArgoCD (`automated.selfHeal: true`, `automated.prune: true`). No manual `kubectl apply` is required after the initial bootstrap.
@@ -318,37 +434,54 @@ Any subsequent change to a file under `gitops/argocd/` merged to `main` is autom
 
 Jenkins itself is a GitOps-managed workload (installed by ArgoCD). Once running, it handles application CI/CD triggered by GitHub.
 
+**Trigger rules** (enforced by `when` directives in the Jenkinsfile):
+
+| Branch | Path filter | Result |
+|---|---|---|
+| `main` | change touches `app/**` | Test → Build & Push → **Deploy to Production** (`max-weather` namespace) |
+| `develop` | change touches `app/**` | Test → Build & Push → **Deploy to Staging** (`max-weather-staging` namespace) |
+| any other branch | — | Pipeline runs but all stages no-op |
+| any branch | change does **not** touch `app/**` | Pipeline runs but all stages no-op |
+
+A manual Jenkins build (UI "Build Now") bypasses the path filter, so you can re-deploy without an `app/` commit.
+
 ```
-Developer pushes to GitHub (main branch)
+Developer pushes to GitHub
       │
-      │  GitHub webhook
+      │  GitHub webhook  (multibranch scan picks up main + develop)
       ▼
 Jenkins (running in EKS, namespace: jenkins)
       │
       ├─ Stage: Checkout
       │         git clone repo
       │         extract short commit SHA
+      │         compute floating tag:  main → latest    develop → staging
       │
-      ├─ Stage: Test
+      ├─ Stage: Test            (when: branch in {main, develop} AND app/** changed)
       │         container: python:3.12
       │         pytest app/tests/ → JUnit XML results
       │
-      ├─ Stage: Build & Push
+      ├─ Stage: Build & Push    (when: branch in {main, develop} AND app/** changed)
       │         container: kaniko (in-cluster, no Docker socket needed)
       │         reads ECR URL from Jenkins credential store (ecr-registry-url)
       │         builds from app/Dockerfile
-      │         pushes two tags to ECR:
+      │         pushes two tags to ECR (same repo for prod and staging):
       │           047750375423.dkr.ecr.ap-south-1.amazonaws.com/max-weather:<build-number>
-      │           047750375423.dkr.ecr.ap-south-1.amazonaws.com/max-weather:latest
+      │           047750375423.dkr.ecr.ap-south-1.amazonaws.com/max-weather:<latest|staging>
       │
-      └─ Stage: Deploy to Production  (only on branch: main)
+      ├─ Stage: Deploy to Production  (when: branch == main AND app/** changed)
+      │         container: aws-kubectl
+      │         aws eks update-kubeconfig  (uses Jenkins IRSA role — no static AWS keys)
+      │         kubectl set image deployment/max-weather max-weather=<new-image> -n max-weather
+      │         kubectl rollout status -n max-weather --timeout=180s
+      │
+      └─ Stage: Deploy to Staging     (when: branch == develop AND app/** changed)
                 container: aws-kubectl
-                aws eks update-kubeconfig  (uses Jenkins IRSA role — no static AWS keys)
-                kubectl set image deployment/max-weather max-weather=<new-image>
-                kubectl rollout status --timeout=180s
+                kubectl set image deployment/max-weather max-weather=<new-image> -n max-weather-staging
+                kubectl rollout status -n max-weather-staging --timeout=180s
                     │
                     ▼
-                EKS performs rolling update
+                EKS performs rolling update in the target namespace
                 (maxUnavailable=1, maxSurge=1)
                 old pods terminated only after new pods pass readinessProbe
 ```
@@ -357,10 +490,36 @@ Jenkins (running in EKS, namespace: jenkins)
 
 | Point | Detail |
 |---|---|
+| Same ECR for both environments | One ECR repo (`max-weather`). Each build pushes a unique build-number tag plus a branch-floating tag (`:latest` for prod, `:staging` for develop) so a develop build never overwrites prod's `:latest`. |
+| Path-scoped triggering | All work stages are gated on `changeset 'app/**'`. Pure infra/docs commits trigger a no-op build. A `triggeredBy 'UserIdCause'` escape hatch lets a manual build run unconditionally. |
+| Staging namespace prerequisite | The pipeline calls `kubectl set image` against an existing `Deployment/max-weather` in `max-weather-staging` — that deployment must already exist (see *Staging Setup* below) or the deploy step fails. |
 | No static AWS keys in cluster | Jenkins uses IRSA (IAM role bound to K8s ServiceAccount via OIDC). The Jenkins IRSA role is added to `aws-auth` by Terraform. |
 | ECR authentication | Kaniko uses `ecr-login` credential helper. ECR URL is a Jenkins secret string (`ecr-registry-url`), not hardcoded. |
 | GitHub credentials | `github-pat` Jenkins credential (populated by JCasC from `jenkins-credentials` K8s secret). Used by GitHub Branch Source plugin to scan the repo and receive webhooks. |
-| Rollback | `kubectl rollout undo deployment/max-weather` — previous ECR image tag is retained by the ECR lifecycle policy (keeps last 10 tagged). |
+| Rollback | `kubectl rollout undo deployment/max-weather -n <ns>` — previous ECR image tag is retained by the ECR lifecycle policy (keeps last 10 tagged). |
+
+### Staging Setup (one-time)
+
+Staging runs in a second namespace on the **same** EKS cluster, sharing the same ECR repo. Before the first `develop` push reaches the deploy stage you need a Deployment in `max-weather-staging` that the pipeline can update.
+
+The simplest route is to reuse the existing Helm chart at `gitops/argocd/microservices/max-weather/` (it already ships a `values-staging.yaml`):
+
+```bash
+kubectl create namespace max-weather-staging
+
+# Copy the JWT secret used by the staging pods
+kubectl get secret max-weather-secrets -n max-weather -o yaml \
+  | sed 's/namespace: max-weather/namespace: max-weather-staging/' \
+  | kubectl apply -f -
+
+# Install the chart into the staging namespace
+helm upgrade --install max-weather \
+  gitops/argocd/microservices/max-weather \
+  -n max-weather-staging \
+  -f gitops/argocd/microservices/max-weather/values-staging.yaml
+```
+
+Or add a second ArgoCD `Application` pointing at the same chart with `values-staging.yaml` and `destination.namespace: max-weather-staging`, alongside the existing `max-weather-prod` app in the bootstrap.
 
 ---
 
@@ -590,19 +749,17 @@ Traffic path becomes: `API Gateway → AWS backbone → internal NLB → Nginx I
 
 ---
 
-### CI/CD — Staging Environment + Manual Approval Gate
-The current Jenkinsfile deploys directly to production on every merge to `main`. The assignment intent (and production best practice) is:
+### CI/CD — Smoke Tests + Manual Approval Gate
+A namespace-based staging environment is now in place — `develop` pushes deploy to `max-weather-staging` on the same cluster (see *CI/CD Flow* above). What's still missing for a true promotion pipeline:
 
 ```
 Test → Build → Deploy Staging → Smoke Tests → Manual Approval → Deploy Production
 ```
 
-Changes needed in `gitops/jenkins/Jenkinsfile`:
-- Add a `Deploy to Staging` stage that targets a `max-weather-staging` namespace (or a separate EKS cluster)
-- Add a smoke test stage (e.g. `curl` the staging API Gateway URL and assert HTTP 200)
-- Add an `input` step (`Proceed to production?`) between staging and production deploy
-
-The Terraform environment variable already supports `staging` — a second `terraform apply -var environment=staging` would provision an identical staging stack.
+Remaining changes in `gitops/jenkins/Jenkinsfile`:
+- Add a smoke test stage after `Deploy to Staging` (e.g. `curl` the staging API Gateway URL and assert HTTP 200)
+- Add an `input` step (`Proceed to production?`) so a single pipeline run promotes staging → prod, instead of relying on a separate `main` merge
+- Stronger isolation: bring up a parallel staging stack via `terraform apply -var environment=staging` (separate VPC, EKS cluster, API Gateway) instead of sharing the production cluster
 
 ---
 

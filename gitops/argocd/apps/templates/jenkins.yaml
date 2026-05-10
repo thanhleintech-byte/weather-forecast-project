@@ -1,0 +1,25 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: jenkins
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.io
+spec:
+  project: default
+  source:
+    repoURL: {{ .Values.repoURL | quote }}
+    targetRevision: {{ .Values.revision | quote }}
+    path: gitops/argocd/infra/jenkins
+    helm:
+      valueFiles:
+        - values-prod.yaml
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: jenkins
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true

@@ -264,3 +264,81 @@ resource "aws_eks_addon" "ebs_csi" {
 
   depends_on = [aws_eks_node_group.this, aws_iam_role_policy_attachment.ebs_csi]
 }
+
+# ---------------------------------------------------------------------------
+# IRSA for Cluster Autoscaler — drives the managed node group's ASG up
+# (when pods are unschedulable due to insufficient capacity) and down
+# (when nodes sit under-utilised). The ASG is discovered via the
+# k8s.io/cluster-autoscaler/* tags applied to the node group above.
+# ---------------------------------------------------------------------------
+
+data "aws_iam_policy_document" "cluster_autoscaler_assume_role" {
+  statement {
+    effect  = "Allow"
+    actions = ["sts:AssumeRoleWithWebIdentity"]
+
+    principals {
+      type        = "Federated"
+      identifiers = [aws_iam_openid_connect_provider.this.arn]
+    }
+
+    condition {
+      test     = "StringEquals"
+      variable = "${replace(aws_iam_openid_connect_provider.this.url, "https://", "")}:sub"
+      values   = ["system:serviceaccount:kube-system:cluster-autoscaler"]
+    }
+
+    condition {
+      test     = "StringEquals"
+      variable = "${replace(aws_iam_openid_connect_provider.this.url, "https://", "")}:aud"
+      values   = ["sts.amazonaws.com"]
+    }
+  }
+}
+
+resource "aws_iam_role" "cluster_autoscaler" {
+  name               = "${local.name_prefix}-cluster-autoscaler-role"
+  assume_role_policy = data.aws_iam_policy_document.cluster_autoscaler_assume_role.json
+}
+
+data "aws_iam_policy_document" "cluster_autoscaler" {
+  statement {
+    sid    = "DescribeAll"
+    effect = "Allow"
+    actions = [
+      "autoscaling:DescribeAutoScalingGroups",
+      "autoscaling:DescribeAutoScalingInstances",
+      "autoscaling:DescribeLaunchConfigurations",
+      "autoscaling:DescribeScalingActivities",
+      "autoscaling:DescribeTags",
+      "ec2:DescribeImages",
+      "ec2:DescribeInstanceTypes",
+      "ec2:DescribeLaunchTemplateVersions",
+      "ec2:GetInstanceTypesFromInstanceRequirements",
+      "eks:DescribeNodegroup",
+    ]
+    resources = ["*"]
+  }
+
+  statement {
+    sid    = "ScaleOnTaggedASGs"
+    effect = "Allow"
+    actions = [
+      "autoscaling:SetDesiredCapacity",
+      "autoscaling:TerminateInstanceInAutoScalingGroup",
+    ]
+    resources = ["*"]
+
+    condition {
+      test     = "StringEquals"
+      variable = "aws:ResourceTag/k8s.io/cluster-autoscaler/${local.name_prefix}"
+      values   = ["owned"]
+    }
+  }
+}
+
+resource "aws_iam_role_policy" "cluster_autoscaler" {
+  name   = "cluster-autoscaler"
+  role   = aws_iam_role.cluster_autoscaler.name
+  policy = data.aws_iam_policy_document.cluster_autoscaler.json
+}

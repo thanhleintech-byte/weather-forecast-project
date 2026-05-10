@@ -43,6 +43,10 @@ output "jenkins_irsa_role_arn" {
   value = module.eks.jenkins_irsa_role_arn
 }
 
+output "cluster_autoscaler_role_arn" {
+  value = module.eks.cluster_autoscaler_role_arn
+}
+
 output "cloudwatch_log_group_app" {
   value = module.cloudwatch.log_group_app
 }

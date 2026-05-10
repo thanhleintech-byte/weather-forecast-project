@@ -50,6 +50,7 @@ spec:
         IMAGE_TAG     = "${env.BUILD_NUMBER}"
         EKS_CLUSTER   = 'max-weather-production'
         PRODUCTION_NS = 'max-weather'
+        STAGING_NS    = 'max-weather-staging'
     }
 
     options {
@@ -65,13 +66,20 @@ spec:
                 checkout scm
                 script {
                     env.GIT_COMMIT_SHORT = sh(script: "git rev-parse --short HEAD", returnStdout: true).trim()
-                    env.FULL_IMAGE   = "${ECR_REGISTRY}/${IMAGE_NAME}:${IMAGE_TAG}"
-                    env.LATEST_IMAGE = "${ECR_REGISTRY}/${IMAGE_NAME}:latest"
+                    def floatingTag = env.BRANCH_NAME == 'main' ? 'latest' : 'staging'
+                    env.FULL_IMAGE     = "${ECR_REGISTRY}/${IMAGE_NAME}:${IMAGE_TAG}"
+                    env.FLOATING_IMAGE = "${ECR_REGISTRY}/${IMAGE_NAME}:${floatingTag}"
                 }
             }
         }
 
         stage('Test') {
+            when {
+                allOf {
+                    anyOf { branch 'main'; branch 'develop' }
+                    anyOf { changeset 'app/**'; triggeredBy 'UserIdCause' }
+                }
+            }
             steps {
                 container('python') {
                     dir('app') {
@@ -92,6 +100,12 @@ spec:
         }
 
         stage('Build & Push') {
+            when {
+                allOf {
+                    anyOf { branch 'main'; branch 'develop' }
+                    anyOf { changeset 'app/**'; triggeredBy 'UserIdCause' }
+                }
+            }
             steps {
                 container('kaniko') {
                     sh """
@@ -101,7 +115,7 @@ spec:
                             --context=\${WORKSPACE}/app \
                             --dockerfile=\${WORKSPACE}/app/Dockerfile \
                             --destination=${env.FULL_IMAGE} \
-                            --destination=${env.LATEST_IMAGE} \
+                            --destination=${env.FLOATING_IMAGE} \
                             --label git-commit=${env.GIT_COMMIT_SHORT} \
                             --label build-number=${IMAGE_TAG}
                     """
@@ -110,7 +124,12 @@ spec:
         }
 
         stage('Deploy to Production') {
-            when { branch 'main' }
+            when {
+                allOf {
+                    branch 'main'
+                    anyOf { changeset 'app/**'; triggeredBy 'UserIdCause' }
+                }
+            }
             steps {
                 container('aws-kubectl') {
                     sh """
@@ -122,6 +141,30 @@ spec:
                             -n ${PRODUCTION_NS}
                         kubectl rollout status deployment/max-weather \
                             -n ${PRODUCTION_NS} \
+                            --timeout=180s
+                    """
+                }
+            }
+        }
+
+        stage('Deploy to Staging') {
+            when {
+                allOf {
+                    branch 'develop'
+                    anyOf { changeset 'app/**'; triggeredBy 'UserIdCause' }
+                }
+            }
+            steps {
+                container('aws-kubectl') {
+                    sh """
+                        aws eks update-kubeconfig \
+                            --region ${AWS_REGION} \
+                            --name ${EKS_CLUSTER}
+                        kubectl set image deployment/max-weather \
+                            max-weather=${env.FULL_IMAGE} \
+                            -n ${STAGING_NS}
+                        kubectl rollout status deployment/max-weather \
+                            -n ${STAGING_NS} \
                             --timeout=180s
                     """
                 }

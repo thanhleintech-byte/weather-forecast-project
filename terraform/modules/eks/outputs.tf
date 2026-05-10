@@ -25,3 +25,7 @@ output "node_security_group_id" {
 output "jenkins_irsa_role_arn" {
   value = aws_iam_role.jenkins.arn
 }
+
+output "cluster_autoscaler_role_arn" {
+  value = aws_iam_role.cluster_autoscaler.arn
+}

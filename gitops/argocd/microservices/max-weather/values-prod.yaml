@@ -21,3 +21,18 @@ hpa:
 pdb:
   enabled: true
   minAvailable: 1
+
+# Two-step daily curve: lift the floor before the morning forecast-check
+# spike, drop it back overnight. Times are in IST (Asia/Kolkata) since the
+# product audience is in India.
+scheduledScaling:
+  enabled: true
+  schedules:
+    - name: morning-up
+      cron: "30 5 * * *"
+      timeZone: Asia/Kolkata
+      minReplicas: 5
+    - name: night-down
+      cron: "0 22 * * *"
+      timeZone: Asia/Kolkata
+      minReplicas: 2

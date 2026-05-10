@@ -299,8 +299,12 @@ Manual cleanup terraform doesn't touch:
 - One root `terraform/` with everything → four stages (`network`, `eks`,
   `argocd`, `api-gateway`), each with its own state.
 - `bootstrap.yaml` lived inside `modules/addons/` (a non-place to put a
-  manifest that changes over time) → now lives at
-  `terraform/argocd/bootstrap.yaml`, next to the apply that uses it.
+  manifest that changes over time), then briefly at
+  `terraform/argocd/bootstrap.yaml` → now lives at
+  `gitops/argocd/bootstrap.yaml` and is itself a GitOps artifact.
+  Terraform applies just that one root Application; every child
+  Application is rendered by the Helm chart at `gitops/argocd/apps/`.
+  Adding/removing a platform component is a pure GitOps change.
 - `npm install` for the Lambda authorizer was a manual step (we hit
   `Cannot find module 'jsonwebtoken'` because of this) → terraform's
   `null_resource.npm_install` now runs it before `archive_file`.

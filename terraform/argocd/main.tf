@@ -148,16 +148,21 @@ resource "kubernetes_secret" "max_weather" {
 }
 
 # ---------------------------------------------------------------------------
-# Bootstrap Argo CD — apply the gitops Application manifests so Argo CD
-# starts managing ingress-nginx, jenkins, max-weather, etc.
+# Bootstrap Argo CD — apply ONLY the root Application (app-of-apps).
 #
-# bootstrap.yaml is checked in NEXT TO this stage (not buried in a module)
-# so it can be edited as apps are added/removed without touching modules.
+# The root manifest lives in the gitops folder, not under terraform/, so it
+# is itself a GitOps artifact. Terraform's only job is to substitute the
+# repo URL and apply this single Application; from there ArgoCD reads
+# gitops/argocd/apps/ and reconciles every child Application (ingress-nginx,
+# cluster-autoscaler, jenkins, max-weather-prod, etc.).
+#
+# To add or remove a platform component, drop a template into
+# gitops/argocd/apps/templates/ and commit. No terraform change needed.
 # ---------------------------------------------------------------------------
 
 locals {
   bootstrap_yaml = replace(
-    file("${path.module}/bootstrap.yaml"),
+    file("${path.module}/../../gitops/argocd/bootstrap.yaml"),
     "GITHUB_REPO_URL",
     var.github_repo_url
   )

@@ -1,0 +1,5 @@
+# Defaults are placeholders only. The real values are passed in by the
+# root Application at gitops/argocd/bootstrap.yaml via spec.source.helm.values
+# so the repo URL lives in exactly one place.
+repoURL: ""
+revision: main

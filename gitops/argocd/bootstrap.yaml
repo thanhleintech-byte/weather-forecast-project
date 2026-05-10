@@ -1,0 +1,34 @@
+# Root Application (app-of-apps).
+#
+# This is the ONLY ArgoCD manifest applied by terraform — everything else
+# (every child Application, every infra Helm chart, the workload itself)
+# is rendered by ArgoCD from gitops/argocd/apps/ once this root is in place.
+#
+# Terraform substitutes GITHUB_REPO_URL at apply time (var.github_repo_url).
+# The same value is passed through to the child apps as a Helm value, so
+# the repo URL lives in exactly one place.
+
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: bootstrap
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.io
+spec:
+  project: default
+  source:
+    repoURL: GITHUB_REPO_URL
+    targetRevision: main
+    path: gitops/argocd/apps
+    helm:
+      values: |
+        repoURL: GITHUB_REPO_URL
+        revision: main
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: argocd
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
