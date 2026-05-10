@@ -492,34 +492,12 @@ Jenkins (running in EKS, namespace: jenkins)
 |---|---|
 | Same ECR for both environments | One ECR repo (`max-weather`). Each build pushes a unique build-number tag plus a branch-floating tag (`:latest` for prod, `:staging` for develop) so a develop build never overwrites prod's `:latest`. |
 | Path-scoped triggering | All work stages are gated on `changeset 'app/**'`. Pure infra/docs commits trigger a no-op build. A `triggeredBy 'UserIdCause'` escape hatch lets a manual build run unconditionally. |
-| Staging namespace prerequisite | The pipeline calls `kubectl set image` against an existing `Deployment/max-weather` in `max-weather-staging` — that deployment must already exist (see *Staging Setup* below) or the deploy step fails. |
+| Staging namespace prerequisite | The pipeline calls `kubectl set image` against an existing `Deployment/max-weather` in `max-weather-staging` — that deployment must already exist (install the chart from `gitops/argocd/microservices/max-weather/` with `values-staging.yaml` into the `max-weather-staging` namespace) or the deploy step fails. |
 | No static AWS keys in cluster | Jenkins uses IRSA (IAM role bound to K8s ServiceAccount via OIDC). The Jenkins IRSA role is added to `aws-auth` by Terraform. |
 | ECR authentication | Kaniko uses `ecr-login` credential helper. ECR URL is a Jenkins secret string (`ecr-registry-url`), not hardcoded. |
 | GitHub credentials | `github-pat` Jenkins credential (populated by JCasC from `jenkins-credentials` K8s secret). Used by GitHub Branch Source plugin to scan the repo and receive webhooks. |
 | Rollback | `kubectl rollout undo deployment/max-weather -n <ns>` — previous ECR image tag is retained by the ECR lifecycle policy (keeps last 10 tagged). |
 
-### Staging Setup (one-time)
-
-Staging runs in a second namespace on the **same** EKS cluster, sharing the same ECR repo. Before the first `develop` push reaches the deploy stage you need a Deployment in `max-weather-staging` that the pipeline can update.
-
-The simplest route is to reuse the existing Helm chart at `gitops/argocd/microservices/max-weather/` (it already ships a `values-staging.yaml`):
-
-```bash
-kubectl create namespace max-weather-staging
-
-# Copy the JWT secret used by the staging pods
-kubectl get secret max-weather-secrets -n max-weather -o yaml \
-  | sed 's/namespace: max-weather/namespace: max-weather-staging/' \
-  | kubectl apply -f -
-
-# Install the chart into the staging namespace
-helm upgrade --install max-weather \
-  gitops/argocd/microservices/max-weather \
-  -n max-weather-staging \
-  -f gitops/argocd/microservices/max-weather/values-staging.yaml
-```
-
-Or add a second ArgoCD `Application` pointing at the same chart with `values-staging.yaml` and `destination.namespace: max-weather-staging`, alongside the existing `max-weather-prod` app in the bootstrap.
 
 ---
 
