@@ -47,6 +47,16 @@ spec:
                 secretKeyRef:
                   name: {{ .Values.secretName }}
                   key: jwt-secret
+            - name: OAUTH_CLIENT_ID
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.secretName }}
+                  key: oauth-client-id
+            - name: OAUTH_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.secretName }}
+                  key: oauth-client-secret
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
           livenessProbe:

@@ -1,0 +1,9 @@
+aws_region  = "ap-south-1"
+environment = "production"
+
+# Public hostname of the Nginx ingress in front of the FastAPI app (no scheme).
+# Set after the cluster is up and DNS is pointed at the Nginx LoadBalancer.
+app_host = "max-weather.example.com"
+
+# Secret values come from credentials.local.env via TF_VAR_jwt_secret_value.
+# Don't put the JWT signing key in this file.

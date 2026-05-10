@@ -5,6 +5,7 @@ terraform.tfvars
 terraform.tfstate
 terraform.tfstate.backup
 *.tfplan
+tfplan
 crash.log
 
 # Lambda build artifact
@@ -23,6 +24,10 @@ node_modules/
 
 # OS
 .DS_Store
+
+# Local credentials — single source of truth for all secrets, never commit
+credentials.local.env
+*.local.env
 
 # Helm dependency downloads (run `helm dep update` locally — not committed)
 gitops/argocd/infra/*/charts/

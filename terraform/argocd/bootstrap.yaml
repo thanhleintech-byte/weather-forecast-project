@@ -1,3 +1,9 @@
+# Argo CD Application manifests — applied by the argocd terraform stage.
+# GITHUB_REPO_URL is replaced by terraform at apply time (var.github_repo_url).
+#
+# Edit this file when adding/removing applications managed by Argo CD; the
+# stage's `null_resource.argocd_bootstrap` re-applies on any change to the
+# file's hash.
 ---
 apiVersion: argoproj.io/v1alpha1
 kind: Application

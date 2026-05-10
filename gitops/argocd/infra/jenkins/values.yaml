@@ -4,8 +4,11 @@ jenkins:
       tag: "2.504.1-lts"
     serviceType: ClusterIP
     admin:
-      username: admin
-      password: changeme123!
+      # Use the secret created by the argocd terraform stage. The Jenkins
+      # helm chart reads jenkins-admin-user / jenkins-admin-password from it.
+      existingSecret: jenkins-admin-secret
+      userKey: jenkins-admin-user
+      passwordKey: jenkins-admin-password
     resources:
       requests:
         cpu: 500m
@@ -53,14 +56,10 @@ jenkins:
                         scope: GLOBAL
                         id: "github-pat"
                         description: "GitHub PAT — weather-forecast-project"
-                        username: "thanhleintech-byte"
+                        username: "${GITHUB_USERNAME}"
                         password: "${GITHUB_PAT}"
-                    - usernamePassword:
-                        scope: GLOBAL
-                        id: "aws-credentials"
-                        description: "AWS credentials — ECR push + EKS deploy"
-                        username: "${AWS_ACCESS_KEY_ID}"
-                        password: "${AWS_SECRET_ACCESS_KEY}"
+                    # AWS access for ECR push + EKS deploy is provided by
+                    # IRSA on the jenkins ServiceAccount — no static keys.
                     - string:
                         scope: GLOBAL
                         id: "aws-region"

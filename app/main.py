@@ -29,9 +29,12 @@ JWT_EXPIRY_MINUTES = 60
 JWT_ISSUER = "max-weather"
 JWT_AUDIENCE = "max-weather-api"
 
-# Demo credentials — in production replace with a secrets store lookup
+# OAuth2 client_credentials — values come from the max-weather-secrets
+# Kubernetes Secret (created by the argocd terraform stage). Defaults are
+# only for local dev / unit tests.
 VALID_CLIENTS = {
-    "max-weather-client": "super-secret-key",
+    os.environ.get("OAUTH_CLIENT_ID", "max-weather-client"):
+        os.environ.get("OAUTH_CLIENT_SECRET", "super-secret-key"),
 }
 
 GEOCODING_URL = "https://geocoding-api.open-meteo.com/v1/search"

@@ -1,0 +1,12 @@
+aws_region  = "ap-south-1"
+environment = "production"
+
+kubernetes_version = "1.32"
+node_instance_type = "t3.medium"
+node_min_size      = 2
+node_max_size      = 10
+node_desired_size  = 3
+
+ecr_image_retention_count = 10
+log_retention_days        = 30
+error_alarm_threshold     = 10

@@ -1,0 +1,12 @@
+# Network stage — defaults are fine for most cases.
+# Override here if you need a different region/CIDR.
+
+aws_region  = "ap-south-1"
+environment = "production"
+
+vpc_cidr             = "10.0.0.0/16"
+public_subnet_cidrs  = ["10.0.1.0/24", "10.0.2.0/24"]
+private_subnet_cidrs = ["10.0.3.0/24", "10.0.4.0/24"]
+
+# Set to true for non-prod to halve NAT cost (loses zonal HA on egress).
+single_nat_gateway = false

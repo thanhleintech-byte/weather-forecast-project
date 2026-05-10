@@ -1,0 +1,6 @@
+aws_region  = "ap-south-1"
+environment = "production"
+
+# Non-secret config — secrets come from credentials.local.env via TF_VAR_*.
+# (github_repo_url, github_username are non-secret too but kept in env for
+#  consistency. Move them here if you'd rather they live in the tfvars.)

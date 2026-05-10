@@ -3,10 +3,31 @@ locals {
   source_dir    = "${path.module}/../../../lambda/authorizer"
 }
 
+# Run `npm ci --omit=dev` before archiving so the zip ships with node_modules.
+# Without this the deployed Lambda fails with "Cannot find module 'jsonwebtoken'".
+# Triggers off package-lock.json (or package.json) hash so re-installs only
+# happen when dependencies change.
+resource "null_resource" "npm_install" {
+  triggers = {
+    package_hash = filesha256(
+      fileexists("${local.source_dir}/package-lock.json")
+        ? "${local.source_dir}/package-lock.json"
+        : "${local.source_dir}/package.json"
+    )
+  }
+
+  provisioner "local-exec" {
+    working_dir = local.source_dir
+    command = fileexists("${local.source_dir}/package-lock.json") ? "npm ci --omit=dev" : "npm install --omit=dev"
+  }
+}
+
 data "archive_file" "authorizer" {
   type        = "zip"
   source_dir  = local.source_dir
   output_path = "${path.module}/authorizer.zip"
+
+  depends_on = [null_resource.npm_install]
 }
 
 resource "aws_lambda_function" "authorizer" {
