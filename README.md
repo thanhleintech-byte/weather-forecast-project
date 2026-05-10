@@ -30,8 +30,8 @@ Production-ready weather forecasting API on AWS EKS — high availability, auto-
 │       ▼                                                                         │
 │  ┌────────────────────────────────────────┐                                     │
 │  │          AWS API Gateway (REST API)    │                                     │
-│  │  https://n1hr2duj11.execute-api.       │                                     │
-│  │      ap-south-1.amazonaws.com/prod    │                                     │
+│  │  https://<api-id>.execute-api.         │                                     │
+│  │     <region>.amazonaws.com/<stage>     │                                     │
 │  └─────────────┬──────────────────────────┘                                     │
 │                │ Authorization header present?                                   │
 │                ▼                                                                 │
@@ -219,34 +219,51 @@ This is the "node-level scheduled scaling" requirement satisfied **indirectly** 
 
 ```
 max-weather/
-├── app/                                    # FastAPI application + tests
-│   ├── main.py
+├── app/                                       # FastAPI weather proxy
+│   ├── main.py                                #   /health, /token, /weather/{current,forecast,coordinates}
+│   ├── Dockerfile                             #   built by Jenkins, pushed to ECR
 │   ├── requirements.txt
-│   ├── Dockerfile
-│   └── tests/test_main.py
-├── terraform/                              # Infrastructure as Code
-│   ├── main.tf / variables.tf / outputs.tf / versions.tf
-│   ├── terraform.tfvars.example
-│   └── modules/
-│       ├── vpc/                            # VPC, subnets, IGW, NAT GWs
-│       ├── eks/                            # EKS cluster + node group
-│       ├── ecr/                            # Container registry
-│       ├── iam/                            # Roles: EKS, Lambda, IRSA
-│       ├── cloudwatch/                     # Log groups, metric filters, alarms
-│       ├── lambda_authorizer/              # JWT validation Lambda
-│       ├── api_gateway/                    # REST API + TOKEN authorizer + routes
-│       └── addons/                         # ArgoCD + Jenkins via Helm
-├── gitops/argocd/
-│   ├── bootstrap.yaml                      # Single root Application — only file terraform applies
-│   ├── apps/                               # Helm chart producing the child Applications
-│   ├── infra/                              # ingress-nginx, jenkins, metrics-server, cluster-autoscaler, fluent-bit
-│   └── microservices/max-weather/          # Helm chart (deployment, service, ingress, HPA, PDB, scheduled-scaler)
-├── lambda/authorizer/                      # Node.js 20.x JWT authorizer
-│   ├── index.js
+│   └── tests/                                 #   pytest — runs as the Test stage
+├── lambda/authorizer/                         # Node.js 20.x JWT authorizer for API Gateway
+│   ├── index.js                               #   Bearer token → HS256 verify → Allow/Deny IAM policy
 │   └── package.json
-├── gitops/jenkins/Jenkinsfile              # CI/CD pipeline
-└── postman/
-    └── max-weather-api.postman_collection.json
+├── terraform/                                 # Four stages, each with its own state
+│   ├── network/                               #   Stage 1 — VPC, subnets, IGW, NAT GWs
+│   ├── eks/                                   #   Stage 2 — EKS, IAM/IRSA, ECR, CloudWatch
+│   ├── argocd/                                #   Stage 3 — ArgoCD helm install + bootstrap apply
+│   ├── api-gateway/                           #   Stage 4 — JWT secret, Lambda authorizer, API Gateway
+│   └── modules/                               #   Reusable building blocks called by the stages
+│       ├── vpc/                               #     VPC + subnets + NAT
+│       ├── eks/                               #     Cluster + node group + IRSA roles (app, jenkins, cluster-autoscaler, fluent-bit, ebs-csi)
+│       ├── ecr/                               #     Container registry + lifecycle policy
+│       ├── iam/                               #     Base IAM roles (cluster, nodes, lambda)
+│       ├── cloudwatch/                        #     Log groups + metric filters + alarms
+│       ├── lambda_authorizer/                 #     Lambda function (zip-built locally)
+│       └── api_gateway/                       #     REST API + TOKEN authorizer + routes
+├── gitops/                                    # GitOps source of truth — read by ArgoCD
+│   ├── argocd/
+│   │   ├── bootstrap.yaml                     #   Single root Application — only YAML terraform applies
+│   │   ├── apps/                              #   App-of-apps Helm chart — renders one child Application per component
+│   │   │   ├── Chart.yaml
+│   │   │   ├── values.yaml                    #     repoURL/revision overridden by the root via helm.values
+│   │   │   └── templates/                     #     metrics-server, ingress-nginx, cluster-autoscaler,
+│   │   │                                      #     fluent-bit, jenkins, jenkins-pipelines, max-weather-prod
+│   │   ├── infra/                             #   Helm wrappers that the child Applications install
+│   │   │   ├── metrics-server/
+│   │   │   ├── ingress-nginx/
+│   │   │   ├── cluster-autoscaler/
+│   │   │   ├── fluent-bit/
+│   │   │   ├── jenkins/                       #     Helm values + JCasC (GitHub PAT credential, ECR registry URL, …)
+│   │   │   └── jenkins-pipelines/             #     ConfigMap registering the max-weather multibranch pipeline (Job DSL)
+│   │   └── microservices/max-weather/         #   Helm chart for the FastAPI workload
+│   │       ├── Chart.yaml
+│   │       ├── values.yaml / values-prod.yaml / values-staging.yaml
+│   │       └── templates/                     #     Deployment, Service, Ingress, HPA, PDB, scheduled-scaler (CronJobs)
+│   └── jenkins/Jenkinsfile                    # CI/CD pipeline — Jenkins runs this on every webhook
+├── postman/
+│   └── max-weather-api.postman_collection.json
+├── credentials.local.env(.example)            # gitignored — secrets sourced as TF_VAR_* and consumed by every stage
+└── README.md                                  # This file
 ```
 
 ---
@@ -267,93 +284,76 @@ AWS credentials must have permissions for: `EKS`, `EC2`, `IAM`, `ECR`, `Lambda`,
 
 ## Provisioning Guide
 
-### Step 1 — Create the JWT Secret
-
-Run once before the first `terraform apply`. The ARN is required as a Terraform input.
+### One-time setup
 
 ```bash
-aws secretsmanager create-secret \
-  --name "max-weather/jwt-secret" \
-  --secret-string "$(openssl rand -base64 32)" \
-  --region ap-south-1
+cp credentials.local.env.example credentials.local.env
+$EDITOR credentials.local.env       # GitHub PAT, JWT key, OAuth creds, Jenkins/ArgoCD admin pwds, etc.
+source credentials.local.env        # exports TF_VAR_* — every terraform stage reads from here
 ```
 
-Note the returned `ARN`.
+`credentials.local.env` is gitignored and is the **only** place secrets live. There are no per-stage `terraform.tfvars` files for sensitive values.
 
-### Step 2 — Configure Terraform Variables
+### Apply the four terraform stages in order
+
+| # | Path | What it provisions | Runtime |
+|---|---|---|---|
+| 1 | `terraform/network` | VPC, public + private subnets across 2 AZs, IGW, one NAT GW per AZ | ~3 min |
+| 2 | `terraform/eks` | EKS control plane, managed node group, ECR repo, CloudWatch log groups + metric filters + alarms, IRSA roles for the app, Jenkins, cluster-autoscaler, Fluent Bit, EBS CSI | ~15 min |
+| 3 | `terraform/argocd` | ArgoCD Helm release; pre-creates `jenkins-credentials` / `jenkins-admin-secret` / `max-weather-secrets`; patches `aws-auth` for Jenkins IRSA; applies the GitOps root Application | ~5 min |
+| 4 | `terraform/api-gateway` | JWT signing key in Secrets Manager; Lambda authorizer (zip-built locally); REST API + TOKEN authorizer + routes pointing at the public ingress hostname | ~1 min |
 
 ```bash
-cd terraform
-cp terraform.tfvars.example terraform.tfvars
+cd terraform/network    && terraform init && terraform apply
+cd ../eks               && terraform init && terraform apply
+cd ../argocd            && terraform init && terraform apply
+cd ../api-gateway       && terraform init && terraform apply
 ```
 
-Edit `terraform.tfvars` and set at minimum:
+Each stage holds its own state. Stages 2–4 read upstream outputs via `terraform_remote_state`, so you can re-run any one of them independently without touching the others.
 
-| Variable | Description |
-|----------|-------------|
-| `aws_region` | Target region (e.g. `ap-south-1`) |
-| `environment` | `production` or `staging` |
-| `jwt_secret_arn` | ARN from Step 1 |
-| `github_repo_url` | HTTPS URL of this repo (used by ArgoCD + Jenkins) |
-| `github_pat` | GitHub PAT with `repo` scope |
-| `aws_access_key_id` | AWS key used by Jenkins for ECR push and EKS deploy |
-| `aws_secret_access_key` | Corresponding secret key |
+### What happens after Stage 3 (ArgoCD)
 
-### Step 3 — Provision All Infrastructure (Terraform)
+Stage 3 is the handoff point. After it returns, terraform's job is done for the in-cluster platform — ArgoCD takes over and finishes wiring everything from `gitops/argocd/`:
+
+1. **The `bootstrap` root Application** (the one manifest terraform applied) renders the `gitops/argocd/apps/` Helm chart, producing **7 child Applications**:
+   - `metrics-server` — required by HPA
+   - `ingress-nginx` — creates the public NLB
+   - `cluster-autoscaler` — drives the node-group ASG up/down
+   - `fluent-bit` — DaemonSet shipping every pod's stdout to CloudWatch
+   - `jenkins` — Jenkins controller, **preconfigured via JCasC** with the `github-pat` credential populated from the `jenkins-credentials` K8s secret (which Stage 3 created)
+   - `jenkins-pipelines` — ConfigMap registering the `max-weather` multibranch pipeline via Job DSL; points Jenkins at this repo and at `gitops/jenkins/Jenkinsfile`
+   - `max-weather-prod` — the FastAPI workload (Deployment, Service, Ingress, HPA, PDB, scheduled scaler)
+
+2. **Jenkins boots and immediately scans GitHub** using `github-pat`. It discovers the `main` branch, finds the multibranch pipeline definition, and triggers the first run automatically:
+   - **Test** — pytest in a `python:3.12` agent
+   - **Build & Push** — Kaniko builds `app/Dockerfile` and pushes `:<build#>` and `:latest` to ECR (using the Jenkins IRSA role, no static AWS keys)
+   - **Deploy to Production** — `kubectl set image deployment/max-weather max-weather=<new-image> -n max-weather`, then `kubectl rollout status`
+
+   The `max-weather` Deployment was already created by ArgoCD in step 1 with `:latest`, so the deploy stage is just a rolling update from a placeholder to the freshly-pushed image.
+
+So **no manual `docker build` / `docker push` is required.** The first commit to `main` after Jenkins is online (which can be the same commit that ran terraform) produces the production image and rolls the Deployment.
+
+### After all four stages
 
 ```bash
-terraform init
-terraform plan     # review before applying
-terraform apply
+$(terraform -chdir=terraform/eks output -raw kubeconfig_command)        # configure kubectl
+kubectl get nodes                                                        # all Ready
+kubectl -n argocd get applications                                       # all Synced + Healthy
+terraform -chdir=terraform/api-gateway output api_gateway_url            # public API URL
 ```
 
-Typical apply time: **20–25 minutes** (EKS control plane ~8 min, node group ~3 min).
+End-to-end test with the included [Postman collection](./postman/max-weather-api.postman_collection.json) — see *Testing with Postman* below.
 
-Terraform provisions in dependency order:
-1. **VPC** — multi-AZ (2 public + 2 private subnets, dual NAT GWs)
-2. **IAM** — EKS cluster/node roles, Lambda role, IRSA role
-3. **ECR** — container registry with lifecycle policy
-4. **EKS** — cluster (K8s 1.32), managed node group (t3.medium, 2–10 nodes), add-ons
-5. **CloudWatch** — log groups, metric filters, alarms
-6. **Lambda Authorizer** — deploys `lambda/authorizer/` as a zip to Lambda
-7. **API Gateway** — REST API with TOKEN authorizer, routes, and `prod` stage
-8. **Addons** — installs **ArgoCD only** via Helm; pre-creates `jenkins-credentials` and `max-weather-secrets` K8s secrets; applies the ArgoCD bootstrap manifest; patches `aws-auth` for Jenkins IRSA. Everything else (Jenkins, Nginx, app) is then installed by ArgoCD from Git.
+### Key outputs
 
-After apply, retrieve all outputs:
-
-```bash
-terraform output
-```
-
-Key outputs:
-
-| Output | Description |
-|--------|-------------|
-| `eks_cluster_name` | EKS cluster name |
-| `ecr_repository_url` | ECR registry URL for Docker push |
-| `api_gateway_url` | Public API Gateway invoke URL |
-| `lambda_authorizer_arn` | Lambda authorizer ARN |
-| `eks_kubeconfig_command` | Command to configure kubectl |
-
-### Step 4 — Configure kubectl
-
-```bash
-aws eks update-kubeconfig --region ap-south-1 --name max-weather-production
-kubectl get nodes    # should show nodes in Ready state
-```
-
-### Step 5 — Build and Push the Docker Image
-
-```bash
-ECR_URL=$(terraform output -raw ecr_repository_url)
-
-aws ecr get-login-password --region ap-south-1 \
-  | docker login --username AWS --password-stdin $ECR_URL
-
-docker build -t max-weather ./app
-docker tag  max-weather:latest $ECR_URL:latest
-docker push $ECR_URL:latest
-```
+| Output (stage) | Description |
+|---|---|
+| `cluster_name` (eks) | EKS cluster name |
+| `ecr_repository_url` (eks) | ECR registry URL — Jenkins pushes here |
+| `kubeconfig_command` (eks) | Ready-to-eval `aws eks update-kubeconfig …` |
+| `api_gateway_url` (api-gateway) | Public API Gateway invoke URL |
+| `lambda_authorizer_role_arn` (eks) | Lambda authorizer execution role |
 
 ---
 
@@ -466,8 +466,8 @@ Jenkins (running in EKS, namespace: jenkins)
       │         reads ECR URL from Jenkins credential store (ecr-registry-url)
       │         builds from app/Dockerfile
       │         pushes two tags to ECR (same repo for prod and staging):
-      │           047750375423.dkr.ecr.ap-south-1.amazonaws.com/max-weather:<build-number>
-      │           047750375423.dkr.ecr.ap-south-1.amazonaws.com/max-weather:<latest|staging>
+      │           <account-id>.dkr.ecr.<region>.amazonaws.com/max-weather:<build-number>
+      │           <account-id>.dkr.ecr.<region>.amazonaws.com/max-weather:<latest|staging>
       │
       ├─ Stage: Deploy to Production  (when: branch == main AND app/** changed)
       │         container: aws-kubectl
@@ -529,11 +529,11 @@ Or add a second ArgoCD `Application` pointing at the same chart with `values-sta
 
 | Method | Path | Auth | Backend |
 |--------|------|------|---------|
-| `GET` | `/health` | None | `https://max-weather.workaholic.dpdns.org/health` |
-| `POST` | `/token` | None | `https://max-weather.workaholic.dpdns.org/token` |
-| `ANY` | `/weather/{proxy+}` | JWT required | `https://max-weather.workaholic.dpdns.org/weather/{proxy}` |
+| `GET` | `/health` | None | `https://${TF_VAR_app_host}/health` |
+| `POST` | `/token` | None | `https://${TF_VAR_app_host}/token` |
+| `ANY` | `/weather/{proxy+}` | JWT required | `https://${TF_VAR_app_host}/weather/{proxy}` |
 
-**Base URL:** `https://n1hr2duj11.execute-api.ap-south-1.amazonaws.com/prod`
+**Base URL:** `https://<api-id>.execute-api.<region>.amazonaws.com/<stage>` — printed as `api_gateway_url` by the `terraform/api-gateway` stage.
 
 ### OAuth2 Flow
 
@@ -565,7 +565,7 @@ Client ──GET /weather/...  Authorization: Bearer <jwt>──► API Gateway
 ## Testing with Postman
 
 1. Import `postman/max-weather-api.postman_collection.json`
-2. Set collection variable `base_url` = `https://n1hr2duj11.execute-api.ap-south-1.amazonaws.com/prod`
+2. Set collection variable `base_url` to the value of `terraform -chdir=terraform/api-gateway output -raw api_gateway_url`
 3. Run **Get Access Token** (`POST /token`) — test script auto-saves the JWT to `access_token`
 4. Run the `/weather/*` requests — they send `Authorization: Bearer {{access_token}}` automatically
 5. Run **Unauthorized Request** — expect 401/403
@@ -576,110 +576,58 @@ Default credentials: `client_id` = `max-weather-client`, `client_secret` = `supe
 
 ## Secrets & External Configuration
 
-Everything below lives **outside the codebase** and must exist before or alongside provisioning. None of these values are committed to Git.
+Every sensitive value lives in one gitignored file — `credentials.local.env` — sourced as `TF_VAR_*` environment variables before each `terraform apply`. Terraform then writes what's needed into AWS Secrets Manager and Kubernetes Secrets. No plaintext is ever committed.
 
----
+> **No AWS access keys required.** Jenkins authenticates to AWS via IRSA on its ServiceAccount; your local `aws` CLI uses your existing profile.
 
-### 1. AWS Secrets Manager — JWT Signing Key
+### Single source: `credentials.local.env`
 
-Created manually in Step 1 of provisioning. Referenced by ARN in `terraform.tfvars`.
+Copy `credentials.local.env.example` and fill in:
 
-| Secret name | Value | Used by |
+| `TF_VAR_…` | Description |
+|---|---|
+| `github_repo_url` | HTTPS URL of this repo (e.g. `https://github.com/<owner>/<repo>.git`) |
+| `github_username` | GitHub username paired with the PAT |
+| `github_pat` | GitHub Personal Access Token, scope `repo` |
+| `jwt_secret_value` | Random base64 32-byte key (HS256). The `api-gateway` stage writes this into AWS Secrets Manager. |
+| `oauth_client_id` / `oauth_client_secret` | Demo OAuth2 client credentials for `POST /token` |
+| `argocd_admin_password` | Plaintext; terraform bcrypt-hashes it before passing to the ArgoCD Helm release |
+| `jenkins_admin_password` | Plaintext; terraform writes it to `jenkins-admin-secret`, which the Jenkins Helm chart mounts via `controller.admin.existingSecret` |
+| `app_host` | Public hostname for the Nginx ingress (e.g. `max-weather.example.com`) — used by the API Gateway HTTP_PROXY integration |
+| `argocd_hostname` | Public hostname for the ArgoCD UI (empty = no ingress, port-forward only) |
+
+### What terraform creates from those values
+
+| Resource | Created in stage | Source `TF_VAR_*` | Consumed by |
+|---|---|---|---|
+| Secrets Manager `max-weather/jwt-secret` | `api-gateway` | `jwt_secret_value` | Lambda Authorizer (HS256 verify), FastAPI app (token signing) |
+| K8s Secret `jenkins-credentials` (ns `jenkins`) | `argocd` | `github_pat`, `github_username` | JCasC → Jenkins credential `github-pat` |
+| K8s Secret `jenkins-admin-secret` (ns `jenkins`) | `argocd` | `jenkins_admin_password` | Jenkins Helm chart admin login |
+| K8s Secret `max-weather-secrets` (ns `max-weather`) | `argocd` | `jwt_secret_value`, `oauth_client_id`, `oauth_client_secret` | FastAPI pods (env vars) |
+| ArgoCD admin password | `argocd` | `argocd_admin_password` (bcrypt-hashed, cached so applies don't churn the Helm release) | ArgoCD UI/CLI login |
+
+Rotate any value by editing `credentials.local.env`, sourcing it, and re-running the relevant stage. Terraform triggers are keyed on value hashes, so unrelated resources stay put.
+
+### Jenkins credentials store (auto-populated by JCasC on first boot)
+
+| Credential ID | Type | Source |
 |---|---|---|
-| `max-weather/jwt-secret` | Base64-encoded random 32-byte key | Lambda Authorizer (validates tokens), FastAPI app (signs tokens) |
-
-The Lambda Authorizer fetches this on cold start and caches it in-memory. The FastAPI pod receives it via the `max-weather-secrets` Kubernetes Secret (see below).
-
----
-
-### 2. `terraform.tfvars` — Sensitive Inputs
-
-These values are never committed. Copy `terraform.tfvars.example` and populate:
-
-| Variable | Where to get it | Sensitive |
-|---|---|---|
-| `jwt_secret_arn` | Output of Step 1 `create-secret` command | No (ARN only) |
-| `github_pat` | GitHub → Settings → Developer settings → Personal access tokens (scope: `repo`) | **Yes** |
-| `aws_access_key_id` | IAM user with ECR push + EKS deploy permissions | **Yes** |
-| `aws_secret_access_key` | Paired with above | **Yes** |
-
----
-
-### 3. Kubernetes Secret: `jenkins-credentials` (namespace: `jenkins`)
-
-Created automatically by `terraform apply` (addons module `local-exec`) **before** ArgoCD installs Jenkins, so Jenkins Configuration-as-Code (JCasC) can reference the values on first boot.
-
-| Key | Value source | Used by |
-|---|---|---|
-| `GITHUB_PAT` | `var.github_pat` from tfvars | JCasC → Jenkins credential `github-pat` |
-| `AWS_ACCESS_KEY_ID` | `var.aws_access_key_id` from tfvars | JCasC → Jenkins credential `aws-credentials` |
-| `AWS_SECRET_ACCESS_KEY` | `var.aws_secret_access_key` from tfvars | JCasC → Jenkins credential `aws-credentials` |
-
-Jenkins mounts this secret via `envFrom` and JCasC expands `${GITHUB_PAT}` etc. at startup.
-
-To rotate: update `terraform.tfvars` and re-run `terraform apply` (the `local-exec` trigger is keyed on a hash of the values).
-
----
-
-### 4. Jenkins Credentials Store (auto-populated by JCasC)
-
-These are created inside Jenkins on first boot from the `jenkins-credentials` secret above. No manual Jenkins UI steps required.
-
-| Credential ID | Type | Value |
-|---|---|---|
-| `github-pat` | Username/Password | Username: `thanhleintech-byte`, Password: `${GITHUB_PAT}` |
-| `aws-credentials` | Username/Password | Username: `${AWS_ACCESS_KEY_ID}`, Password: `${AWS_SECRET_ACCESS_KEY}` |
+| `github-pat` | Username/Password | `${GITHUB_USERNAME}` / `${GITHUB_PAT}` from `jenkins-credentials` |
+| `ecr-registry-url` | Secret string | Hardcoded in `gitops/argocd/infra/jenkins/values.yaml` |
 | `aws-region` | Secret string | `ap-south-1` |
-| `ecr-registry-url` | Secret string | `047750375423.dkr.ecr.ap-south-1.amazonaws.com` |
 
-The Jenkinsfile references `ecr-registry-url` via `credentials('ecr-registry-url')`.
+The Jenkinsfile reads `ecr-registry-url` via `credentials('ecr-registry-url')`. AWS access for the pipeline is via the Jenkins ServiceAccount's IRSA role — no static AWS credentials anywhere.
 
----
+### Admin UIs
 
-### 5. Jenkins Admin Password
+| Service | URL | Username | Password |
+|---|---|---|---|
+| ArgoCD | `https://${TF_VAR_argocd_hostname}` *or* `kubectl -n argocd port-forward svc/argocd-server 8080:443` | `admin` | `${TF_VAR_argocd_admin_password}` |
+| Jenkins | configured via the Jenkins Helm chart's `controller.ingress.hostName` *or* `kubectl -n jenkins port-forward svc/jenkins 8080:8080` | `admin` | `${TF_VAR_jenkins_admin_password}` |
 
-Defined in `gitops/argocd/infra/jenkins/values.yaml`:
+### Application demo credentials
 
-| Username | Default password | Action required |
-|---|---|---|
-| `admin` | `changeme123!` | **Change immediately after first login** at `https://jenkins.workaholic.dpdns.org` |
-
----
-
-### 6. ArgoCD Admin Password
-
-ArgoCD sets the initial admin password to the name of its server pod on first install. Retrieve it:
-
-```bash
-kubectl get secret argocd-initial-admin-secret \
-  -n argocd \
-  -o jsonpath='{.data.password}' | base64 -d
-```
-
-Access the UI via port-forward (no Ingress configured for ArgoCD):
-
-```bash
-kubectl port-forward svc/argocd-server -n argocd 8080:443
-# then open https://localhost:8080  (username: admin)
-```
-
-Change the password after first login via the ArgoCD UI or CLI.
-
----
-
-### 7. Kubernetes Secret: `max-weather-secrets` (namespace: `max-weather`)
-
-Created automatically by `terraform apply` (addons module). Fetches the JWT signing key from Secrets Manager and stores it as a K8s secret so pods never need direct AWS access for the secret value.
-
-| Key | Value source | Mounted as |
-|---|---|---|
-| `jwt-secret` | Fetched from `max-weather/jwt-secret` in Secrets Manager | `JWT_SECRET` env var in FastAPI pods |
-
----
-
-### 8. Application Demo Credentials
-
-Hardcoded in `app/main.py` for the OAuth2 token endpoint. Change before any public-facing deployment.
+Hardcoded in `app/main.py` for the `POST /token` endpoint — change before any public-facing deployment.
 
 | `client_id` | `client_secret` |
 |---|---|
@@ -721,41 +669,26 @@ CloudWatch Logs: /eks/max-weather/application
 
 ## Terraform Modules
 
+Reusable modules under `terraform/modules/`. The four stage roots compose them.
+
 | Module | Resources Created |
 |---|---|
-| `vpc` | VPC, public/private subnets, IGW, NAT GWs, route tables |
-| `eks` | EKS cluster, managed node group, OIDC provider, add-ons |
-| `ecr` | ECR repository + lifecycle policy |
-| `iam` | EKS roles, node role, IRSA role, Lambda role |
-| `cloudwatch` | Log groups, metric filters, alarms |
-| `lambda_authorizer` | Lambda function + API Gateway permission |
-| `api_gateway` | REST API, Lambda TOKEN authorizer, routes, `prod` stage |
-| `addons` | ArgoCD (Helm), `jenkins-credentials` + `max-weather-secrets` K8s secrets, ArgoCD bootstrap manifest, `aws-auth` patch for Jenkins IRSA |
+| `vpc` | VPC, public/private subnets across 2 AZs, IGW, route tables, one NAT GW per AZ |
+| `eks` | EKS cluster + managed node group, EKS add-ons (CoreDNS, kube-proxy, VPC-CNI, EBS-CSI), OIDC provider, IRSA roles for the EBS CSI driver, Jenkins, Cluster Autoscaler, and Fluent Bit |
+| `ecr` | ECR repository with image scanning + lifecycle policy |
+| `iam` | Base EKS cluster role, node role, Lambda execution role |
+| `cloudwatch` | Log groups (`/eks/<project>/application`, `/eks/<project>/nginx`, `/aws/lambda/<project>-authorizer`), metric filters, alarms |
+| `lambda_authorizer` | Lambda function (zip-built locally) + API Gateway invoke permission |
+| `api_gateway` | REST API, TOKEN authorizer, routes, `prod` stage |
 
-All modules accept `project_name` and `environment` — change `environment = "staging"` to spin up an identical staging stack.
-
----
-
-## Deployed Resources (ap-south-1, account 047750375423)
-
-| Resource | Value |
-|----------|-------|
-| VPC | `vpc-06a09cf8e730e309f` |
-| EKS Cluster | `max-weather-production` (Kubernetes 1.32) |
-| ECR | `047750375423.dkr.ecr.ap-south-1.amazonaws.com/max-weather` |
-| API Gateway | `https://n1hr2duj11.execute-api.ap-south-1.amazonaws.com/prod` |
-| Lambda Authorizer | `arn:aws:lambda:ap-south-1:047750375423:function:max-weather-authorizer-production` |
-| IRSA Role | `arn:aws:iam::047750375423:role/max-weather-production-app-irsa-role` |
-| JWT Secret | `arn:aws:secretsmanager:ap-south-1:047750375423:secret:max-weather/jwt-secret-VFpr5F` |
-| CW Log Group (app) | `/eks/max-weather/application` |
-| CW Log Group (nginx) | `/eks/max-weather/nginx` |
+All modules accept `project_name` and `environment` — set `environment = "staging"` to spin up a parallel stack with isolated state.
 
 ---
 
 ## Potential Enhancements
 
 ### API Gateway — VPC Link (PrivateLink)
-Currently API Gateway reaches the backend via the **public internet**: it resolves `max-weather.workaholic.dpdns.org` to the NLB's public DNS and sends traffic over the open internet. The NLB is therefore internet-reachable, meaning a client who discovers the NLB hostname can bypass API Gateway and the Lambda Authorizer entirely.
+Currently API Gateway reaches the backend via the **public internet**: it resolves the configured `app_host` to the NLB's public DNS and sends traffic over the open internet. The NLB is therefore internet-reachable, meaning a client who discovers the NLB hostname can bypass API Gateway and the Lambda Authorizer entirely.
 
 Fix: replace the public NLB with an internal NLB and connect API Gateway via a VPC Link.
 
@@ -781,19 +714,6 @@ Remaining changes in `gitops/jenkins/Jenkinsfile`:
 
 ---
 
-### ArgoCD — Ingress & TLS
-ArgoCD is currently only accessible via `kubectl port-forward`. For team access, add an Ingress to expose the ArgoCD UI:
-
-- Add an ArgoCD Ingress in `gitops/argocd/infra/` with the `nginx` ingress class and a cert-manager TLS annotation
-- Alternatively add `server.ingress.enabled: true` to the ArgoCD Helm values
-
----
-
-### Jenkins Admin Password — External Secret
-The Jenkins admin password (`changeme123!`) is hardcoded in `gitops/argocd/infra/jenkins/values.yaml` (committed to Git). It should be moved to the `jenkins-credentials` Kubernetes Secret (managed by Terraform) and referenced via `admin.existingSecret` in the Helm values.
-
----
-
 ### JWT — Asymmetric Signing (RS256)
 The current implementation uses HS256 with a shared secret. For a multi-service setup, RS256 is preferable: the app signs with a private key; any service can verify with the public key without ever seeing the private key. The Lambda Authorizer would fetch the public key (or JWKS endpoint) rather than the shared secret.
 
@@ -804,8 +724,50 @@ Log groups, metric filters, and alarms are provisioned but there is no CloudWatc
 
 ---
 
-### Terraform — Automated Tests
-The assignment notes that CloudWatch and scaling code "must be tested prior to submission." No `.tftest.hcl` (Terraform native tests) or Terratest files currently exist. Adding unit tests for the `cloudwatch` and `api_gateway` modules would validate resource configuration without a full `apply`.
+### Centralized secrets — External Secrets Operator
+
+Today terraform writes the JWT signing key into AWS Secrets Manager **and** copies it into a Kubernetes Secret in the `argocd` stage so the FastAPI pods can mount it as env vars. That duplication means rotating the value requires editing `credentials.local.env` and re-running `terraform apply`.
+
+Replace it with **External Secrets Operator (ESO)**:
+
+- Install ESO via a new ArgoCD Application (`gitops/argocd/infra/external-secrets/`).
+- Define a `SecretStore` (or `ClusterSecretStore`) authenticated to AWS via IRSA (`secretsmanager:GetSecretValue` scoped to `max-weather/*`).
+- Define an `ExternalSecret` per consuming workload that points at the Secrets Manager entry; ESO materialises a regular `Secret` and keeps it in sync.
+- Delete `kubernetes_secret.max_weather` from `terraform/argocd/main.tf`.
+
+Result: AWS Secrets Manager becomes the single source of truth. Rotation is a one-call Secrets Manager update — no terraform, no Helm release churn.
+
+---
+
+### CI/CD — Security scanning + Terraform tests
+
+The Jenkinsfile currently runs only `pytest`. A defence-in-depth pipeline adds parallel scanning stages that fail the build before vulnerable code or secrets reach the registry / cluster:
+
+| Stage | Tool | What it catches |
+|---|---|---|
+| Credential leak scan | `gitleaks`, `trufflehog` | API keys / AWS credentials / JWT secrets accidentally committed |
+| Container image scan | `trivy image` against the freshly-built ECR tag | Known CVEs in base image and Python deps; fail on `HIGH`/`CRITICAL` |
+| Dependency scan | `pip-audit` (Python), Dependabot / Snyk (transitive) | Vulnerable libraries pinned in `requirements.txt` / `package.json` |
+| K8s manifest scan | `trivy config`, `kubesec` against `gitops/.../templates/*.yaml` | Privileged pods, missing resource limits, root filesystem, etc. |
+| Terraform code scan | `tfsec`, `checkov` against `terraform/` | Public S3 buckets, unencrypted volumes, wildcard IAM, missing tags |
+| Terraform unit tests | `.tftest.hcl` (native, since 1.6) or Terratest | Resource shape under different inputs — e.g. that `cloudwatch` alarm thresholds and `eks` HPA bounds match the variables, without a full `apply` |
+
+All scanners emit SARIF for PR-level annotations and JUnit XML for the Jenkins UI. Wiring them in parallel keeps total pipeline time close to the current single-stage run.
+
+---
+
+### EKS API server — private endpoint + bastion / VPN
+
+The cluster's API server is currently public (`endpoint_public_access = true` in `terraform/modules/eks/main.tf`). Anyone on the internet can probe it for misconfigurations or zero-days.
+
+Production hardening path:
+
+1. Flip the EKS endpoint config: `endpoint_public_access = false`, `endpoint_private_access = true`. The API server then resolves only to a private IP inside the VPC.
+2. Provide an in-VPC entry point for operators:
+   - **AWS Client VPN** in the same VPC (mutual-TLS auth, ~$0.10/hr per active association) — best for distributed operator access from anywhere.
+   - **Bastion host** (small EC2 in a public subnet, no SSH keys, accessed via SSM Session Manager) — cheapest; operators run `aws ssm start-session` then `kubectl` from the bastion.
+3. Update the Cloudflare side: nothing — API Gateway is already the only ingress for end-user traffic, and it lives outside the VPC. Combined with *API Gateway VPC Link* above, the resulting topology has **only one component reachable from the internet — the API Gateway URL**.
+4. Jenkins is unaffected (it's already inside the cluster). Local `kubectl` / `terraform apply` for stages 2-4 must traverse the VPN or bastion.
 
 ---
 
@@ -820,12 +782,21 @@ API Gateway is currently open to the internet without rate limiting at the AWS l
 
 ## Tear Down
 
-```bash
-cd terraform
-terraform destroy
+Destroy in **reverse order** of apply, since later stages read state from earlier ones via `terraform_remote_state`:
 
-aws secretsmanager delete-secret \
-  --secret-id max-weather/jwt-secret \
-  --region ap-south-1 \
-  --force-delete-without-recovery
+```bash
+cd terraform/api-gateway && terraform destroy
+cd ../argocd             && terraform destroy
+cd ../eks                && terraform destroy
+cd ../network            && terraform destroy
 ```
+
+If `argocd` destroy hangs on ArgoCD `Application` finalizers, force-clear them first:
+
+```bash
+kubectl -n argocd get applications -o name \
+  | xargs -I {} kubectl -n argocd patch {} --type=merge \
+      -p '{"metadata":{"finalizers":[]}}'
+```
+
+The `api-gateway` stage manages the JWT signing key in Secrets Manager and removes it on destroy. The Cloudflare DNS records pointing at the old NLB are not managed by terraform; clean those up manually.
