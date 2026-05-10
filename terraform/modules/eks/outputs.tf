@@ -29,3 +29,7 @@ output "jenkins_irsa_role_arn" {
 output "cluster_autoscaler_role_arn" {
   value = aws_iam_role.cluster_autoscaler.arn
 }
+
+output "fluent_bit_role_arn" {
+  value = aws_iam_role.fluent_bit.arn
+}

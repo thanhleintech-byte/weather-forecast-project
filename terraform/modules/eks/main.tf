@@ -342,3 +342,60 @@ resource "aws_iam_role_policy" "cluster_autoscaler" {
   role   = aws_iam_role.cluster_autoscaler.name
   policy = data.aws_iam_policy_document.cluster_autoscaler.json
 }
+
+# ---------------------------------------------------------------------------
+# IRSA for Fluent Bit — DaemonSet that tails pod stdout off every node and
+# ships it to CloudWatch Logs. The log groups themselves are created by the
+# cloudwatch module; this role only needs write access (autoCreateGroup is
+# disabled in the helm values so we don't need logs:CreateLogGroup).
+# ---------------------------------------------------------------------------
+
+data "aws_iam_policy_document" "fluent_bit_assume_role" {
+  statement {
+    effect  = "Allow"
+    actions = ["sts:AssumeRoleWithWebIdentity"]
+
+    principals {
+      type        = "Federated"
+      identifiers = [aws_iam_openid_connect_provider.this.arn]
+    }
+
+    condition {
+      test     = "StringEquals"
+      variable = "${replace(aws_iam_openid_connect_provider.this.url, "https://", "")}:sub"
+      values   = ["system:serviceaccount:kube-system:fluent-bit"]
+    }
+
+    condition {
+      test     = "StringEquals"
+      variable = "${replace(aws_iam_openid_connect_provider.this.url, "https://", "")}:aud"
+      values   = ["sts.amazonaws.com"]
+    }
+  }
+}
+
+resource "aws_iam_role" "fluent_bit" {
+  name               = "${local.name_prefix}-fluent-bit-role"
+  assume_role_policy = data.aws_iam_policy_document.fluent_bit_assume_role.json
+}
+
+data "aws_iam_policy_document" "fluent_bit" {
+  statement {
+    effect = "Allow"
+    actions = [
+      "logs:CreateLogStream",
+      "logs:PutLogEvents",
+      "logs:DescribeLogStreams",
+    ]
+    resources = [
+      "arn:aws:logs:*:*:log-group:/eks/${var.project_name}/*",
+      "arn:aws:logs:*:*:log-group:/eks/${var.project_name}/*:log-stream:*",
+    ]
+  }
+}
+
+resource "aws_iam_role_policy" "fluent_bit" {
+  name   = "fluent-bit"
+  role   = aws_iam_role.fluent_bit.name
+  policy = data.aws_iam_policy_document.fluent_bit.json
+}

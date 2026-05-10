@@ -1,0 +1,9 @@
+apiVersion: v2
+name: fluent-bit
+description: Fluent Bit DaemonSet — ships pod stdout to CloudWatch
+type: application
+version: 0.1.0
+dependencies:
+  - name: aws-for-fluent-bit
+    repository: https://aws.github.io/eks-charts
+    version: "0.1.36"

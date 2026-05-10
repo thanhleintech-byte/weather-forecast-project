@@ -69,7 +69,7 @@ Production-ready weather forecasting API on AWS EKS — high availability, auto-
 │  │  │  │  Service (ClusterIP :80)                                   │  │  │    │
 │  │  │  │       │                                                    │  │  │    │
 │  │  │  │       ▼                                                    │  │  │    │
-│  │  │  │  Deployment: max-weather (2–10 replicas via HPA)           │  │  │    │
+│  │  │  │  Deployment: max-weather (3–10 replicas via HPA)           │  │  │    │
 │  │  │  │  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐        │  │  │    │
 │  │  │  │  │   Pod  AZ-a │  │   Pod  AZ-b │  │   Pod  ...  │        │  │  │    │
 │  │  │  │  │  FastAPI    │  │  FastAPI    │  │  (auto-      │        │  │  │    │
@@ -85,8 +85,8 @@ Production-ready weather forecasting API on AWS EKS — high availability, auto-
 │  │  │  └──────────────────────────────────────────────────────────┘   │  │    │
 │  │  │                                                                  │  │    │
 │  │  │  ┌──────────────────────────────────────────────────────────┐   │  │    │
-│  │  │  │  Fluent Bit DaemonSet                                    │   │  │    │
-│  │  │  │  Collects stdout logs → CloudWatch Log Groups            │   │  │    │
+│  │  │  │  Fluent Bit DaemonSet  (kube-system)                     │   │  │    │
+│  │  │  │  Tails every pod's stdout → CloudWatch Logs              │   │  │    │
 │  │  │  └───────────────────────────┬──────────────────────────────┘   │  │    │
 │  │  └──────────────────────────────┼───────────────────────────────── ┘  │    │
 │  └─────────────────────────────────┼────────────────────────────────────┘    │
@@ -94,8 +94,8 @@ Production-ready weather forecasting API on AWS EKS — high availability, auto-
 │  ┌─────────────────────────────────▼───────────────────────┐                  │
 │  │  Amazon CloudWatch                                       │                  │
 │  │  Log Groups:                                             │                  │
-│  │    /eks/max-weather/application  (app stdout)            │                  │
-│  │    /eks/max-weather/nginx        (ingress access logs)   │                  │
+│  │    /eks/max-weather/application  (every pod's stdout)    │                  │
+│  │    /eks/max-weather/nginx        (reserved — see Logs)   │                  │
 │  │    /aws/lambda/max-weather-authorizer                    │                  │
 │  │  Metric Filters + Alarms (error rate, auth rejections)   │                  │
 │  └─────────────────────────────────────────────────────────┘                  │
@@ -119,7 +119,7 @@ External:
 | **HPA** | `autoscaling/v2`. CPU 70% and memory 80% targets. Scale-up: +2 pods/60 s. Scale-down: −1 pod/60 s, 300 s stabilisation window. See *Scaling — Pod level (reactive)*. |
 | **Cluster Autoscaler** | Deployed via ArgoCD into `kube-system`. Drives the EKS node group's ASG up/down based on pending pods. IRSA-authenticated, ASG discovery by tag. See *Scaling — Node level (reactive)*. |
 | **Scheduled scaler** | Two `CronJob`s in the `max-weather` namespace that patch the HPA's `minReplicas` at fixed times (05:30 / 22:00 IST). See *Scaling — Pod level (scheduled)*. |
-| **Fluent Bit** | DaemonSet. Forwards JSON-structured pod stdout to `/eks/max-weather/application`. |
+| **Fluent Bit** | `aws-for-fluent-bit` Helm chart, deployed by ArgoCD into `kube-system` as a DaemonSet on every node. Tails `/var/log/containers/*.log` and writes every pod's stdout to `/eks/max-weather/application` via the `cloudwatch_logs` output plugin. IRSA-authenticated; no static AWS keys. |
 | **ECR** | Private registry. Scan on push, AES-256 encryption, lifecycle policy: keep 10 tagged / expire untagged after 7 days. |
 
 ### High Availability
@@ -239,7 +239,7 @@ max-weather/
 ├── gitops/argocd/
 │   ├── bootstrap.yaml                      # Single root Application — only file terraform applies
 │   ├── apps/                               # Helm chart producing the child Applications
-│   ├── infra/                              # ingress-nginx, jenkins, metrics-server, cluster-autoscaler
+│   ├── infra/                              # ingress-nginx, jenkins, metrics-server, cluster-autoscaler, fluent-bit
 │   └── microservices/max-weather/          # Helm chart (deployment, service, ingress, HPA, PDB, scheduled-scaler)
 ├── lambda/authorizer/                      # Node.js 20.x JWT authorizer
 │   ├── index.js
@@ -689,13 +689,31 @@ Hardcoded in `app/main.py` for the OAuth2 token endpoint. Change before any publ
 
 ## CloudWatch Observability
 
-| Log Group | Source |
-|---|---|
-| `/eks/max-weather/application` | App pods (JSON structured via Fluent Bit DaemonSet) |
-| `/eks/max-weather/nginx` | Nginx Ingress access logs |
-| `/aws/lambda/max-weather-authorizer` | Lambda authorizer invocations |
+### Log shipping path
 
-**Metric filters → Alarms:**
+```
+pod stdout
+   │
+   ▼  /var/log/containers/<pod>_<ns>_<container>-<id>.log on the node
+Fluent Bit DaemonSet (kube-system, IRSA: max-weather-production-fluent-bit-role)
+   │
+   ▼  cloudwatch_logs output plugin
+CloudWatch Logs: /eks/max-weather/application
+   │
+   ├──► metric filter MaxWeatherErrorCount    ──► alarm MaxWeather-high-error-rate
+   └──► metric filter MaxWeatherAuthRejections ──► alarm MaxWeather-high-auth-rejections
+```
+
+### Log Groups
+
+| Log Group | Populated by | Notes |
+|---|---|---|
+| `/eks/max-weather/application` | Fluent Bit DaemonSet (every pod on every node) | App stdout, ingress-nginx, system pods — all land here. The metric filters run against this group. |
+| `/eks/max-weather/nginx` | *(not currently routed)* | Pre-created by terraform for an eventual nginx-only output split (would need a second `cloudwatch_logs` block in the Fluent Bit config + filter on `kube.var.log.containers.*ingress-nginx*`). |
+| `/aws/lambda/max-weather-authorizer` | Lambda runtime (no Fluent Bit involved) | Every authorizer invocation. |
+
+### Metric filters → Alarms
+
 - `MaxWeatherErrorCount` — fires when ERROR log events exceed 10 per 5 min
 - `MaxWeatherAuthRejections` — fires when auth rejections exceed 50 per 5 min (security signal)
 

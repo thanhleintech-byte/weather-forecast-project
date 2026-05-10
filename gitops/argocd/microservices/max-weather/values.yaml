@@ -61,7 +61,10 @@ secretName: max-weather-secrets
 # (CPU/memory-driven) scaling between schedules; this just lifts the floor.
 scheduledScaling:
   enabled: false
-  image: bitnami/kubectl:1.32
+  # alpine/k8s ships kubectl + a few helpers and is the same image Jenkins
+  # uses to run kubectl rollouts in this cluster. bitnami/kubectl was tried
+  # first but Bitnami removed all versioned tags from Docker Hub.
+  image: alpine/k8s:1.32.3
   serviceAccount:
     name: max-weather-scaler
   schedules: []

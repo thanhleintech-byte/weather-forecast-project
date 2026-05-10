@@ -1,0 +1,44 @@
+aws-for-fluent-bit:
+  # Single CloudWatch destination for ALL pod stdout. The cloudwatch terraform
+  # module pre-creates the log group; autoCreateGroup is therefore false so
+  # the IRSA policy doesn't need logs:CreateLogGroup. The metric filters and
+  # alarms in the cloudwatch module attach to this log group, so once logs
+  # start flowing the MaxWeatherErrorCount / MaxWeatherAuthRejections alarms
+  # become live.
+  cloudWatchLogs:
+    enabled: true
+    match: "*"
+    region: ap-south-1
+    logGroupName: /eks/max-weather/application
+    logStreamPrefix: "pod-"
+    autoCreateGroup: false
+
+  # Disable other outputs the chart bundles by default.
+  kinesis:
+    enabled: false
+  firehose:
+    enabled: false
+  elasticsearch:
+    enabled: false
+
+  serviceAccount:
+    create: true
+    name: fluent-bit
+    annotations:
+      eks.amazonaws.com/role-arn: "arn:aws:iam::047750375423:role/max-weather-production-fluent-bit-role"
+
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 256Mi
+
+  # DaemonSet must run on every node, including any future tainted nodes.
+  tolerations:
+    - operator: Exists
+
+  # Don't let the autoscaler evict the agent during scale-down.
+  podAnnotations:
+    cluster-autoscaler.kubernetes.io/safe-to-evict: "false"
