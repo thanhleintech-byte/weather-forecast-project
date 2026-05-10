@@ -6,6 +6,28 @@ Production-ready weather forecasting API on AWS EKS — high availability, auto-
 
 ---
 
+## Contents
+
+1. [Architecture](#architecture)
+   - [Component Descriptions](#component-descriptions)
+   - [High Availability](#high-availability)
+   - [Scaling](#scaling)
+   - [Security Posture](#security-posture)
+2. [Project Structure](#project-structure)
+3. [Prerequisites](#prerequisites)
+4. [Provisioning Guide](#provisioning-guide) — the **start here** for deploying from scratch
+5. [Bootstrap Flow — Terraform → ArgoCD → GitOps](#bootstrap-flow--terraform--argocd--gitops)
+6. [CI/CD Flow — GitHub → Jenkins → ECR → EKS](#cicd-flow--github--jenkins--ecr--eks)
+7. [API Gateway + Lambda Authorizer](#api-gateway--lambda-authorizer)
+8. [Testing with Postman](#testing-with-postman)
+9. [Secrets & External Configuration](#secrets--external-configuration)
+10. [CloudWatch Observability](#cloudwatch-observability)
+11. [Terraform Modules](#terraform-modules)
+12. [Potential Enhancements](#potential-enhancements)
+13. [Tear Down](#tear-down)
+
+---
+
 ## Architecture
 
 ```
