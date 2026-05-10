@@ -38,7 +38,7 @@ jenkins:
       annotations:
         nginx.ingress.kubernetes.io/proxy-body-size: "0"
         nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
-    envFrom:
+    containerEnvFrom:
       - secretRef:
           name: jenkins-credentials
     sidecars:
