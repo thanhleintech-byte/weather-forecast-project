@@ -81,7 +81,7 @@ Production-ready weather forecasting API on AWS EKS — high availability, auto-
 │  │  │                     ▼                                            │  │    │
 │  │  │  ┌──────────────────────────────────────────────────────────┐   │  │    │
 │  │  │  │  HPA (autoscaling/v2)                                    │   │  │    │
-│  │  │  │  minReplicas=2  maxReplicas=10  CPU target=70%           │   │  │    │
+│  │  │  │  minReplicas=3  maxReplicas=10  CPU target=70%           │   │  │    │
 │  │  │  └──────────────────────────────────────────────────────────┘   │  │    │
 │  │  │                                                                  │  │    │
 │  │  │  ┌──────────────────────────────────────────────────────────┐   │  │    │
@@ -162,7 +162,7 @@ The morning forecast-check spike is handled by **layered scaling** along two axe
 | API | `autoscaling/v2` |
 | CPU target | 70% utilisation |
 | Memory target | 80% utilisation |
-| `minReplicas` / `maxReplicas` | 2 / 10 (floor moves at scheduled times — see below) |
+| `minReplicas` / `maxReplicas` | 3 / 10 (floor moves at scheduled times — see below) — 3 satisfies HA across 2 AZs (`maxSkew: 1` ⇒ 2-1 spread, so any single pod loss still leaves both zones covered) |
 | Scale-up policy | `+2 pods / 60s`, 60s stabilisation |
 | Scale-down policy | `-1 pod / 60s`, 300s stabilisation |
 
@@ -188,14 +188,14 @@ The asymmetric stabilisation windows mean we add capacity quickly and shed it ca
 | Schedule | Time (Asia/Kolkata) | New `minReplicas` |
 |---|---|---|
 | `morning-up` | 05:30 daily | 5 |
-| `night-down` | 22:00 daily | 2 |
+| `night-down` | 22:00 daily | 3 |
 
 A `CronJob` runs a single `kubectl patch hpa max-weather --type=merge --patch '{"spec":{"minReplicas":N}}'`. It uses a dedicated ServiceAccount (`max-weather-scaler`) bound to a Role that allows only `get`/`patch` on the one named HPA — no broader cluster privileges.
 
 The HPA continues reactive scaling between these schedules; the cron just shifts the lower bound. Concretely:
 - 05:30 → cron sets `minReplicas=5`. HPA immediately scales pods up to 5 (or higher if load already demands more). If the cluster doesn't have room for the new pods, Cluster Autoscaler adds a node.
 - During the day → if traffic exceeds what 5 pods can handle, HPA scales further (up to `maxReplicas=10`) and CA adds nodes to fit. If traffic stays below CPU/memory targets, HPA holds at 5.
-- 22:00 → cron sets `minReplicas=2`. HPA scales down (subject to the 300s stabilisation window). After ~10 minutes of idle nodes, CA scales the ASG back down.
+- 22:00 → cron sets `minReplicas=3`. HPA scales down (subject to the 300s stabilisation window). After ~10 minutes of idle nodes, CA scales the ASG back down.
 
 This is the "node-level scheduled scaling" requirement satisfied **indirectly** — there's no second cron that resizes the node group itself, because Cluster Autoscaler will follow the pod count automatically. Adding a direct ASG cron would be redundant and could fight the autoscaler.
 

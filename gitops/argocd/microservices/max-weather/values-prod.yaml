@@ -1,4 +1,4 @@
-replicaCount: 2
+replicaCount: 3
 
 image:
   tag: latest
@@ -13,7 +13,7 @@ resources:
 
 hpa:
   enabled: true
-  minReplicas: 2
+  minReplicas: 3
   maxReplicas: 10
   targetCPUUtilizationPercentage: 70
   targetMemoryUtilizationPercentage: 80
@@ -35,4 +35,4 @@ scheduledScaling:
     - name: night-down
       cron: "0 22 * * *"
       timeZone: Asia/Kolkata
-      minReplicas: 2
+      minReplicas: 3
